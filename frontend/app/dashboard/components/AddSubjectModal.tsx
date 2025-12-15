@@ -1,7 +1,8 @@
-
+"use client";
 import React, { useState, useRef, useEffect } from 'react';
 import { X, ChevronDown, Check } from 'lucide-react';
-import { Subject } from '../types';
+import { Subject } from '@/app/dashboard/types';
+
 
 interface AddSubjectModalProps {
   isOpen: boolean;
@@ -22,11 +23,10 @@ const COLORS = [
 export const AddSubjectModal: React.FC<AddSubjectModalProps> = ({ isOpen, onClose, onAdd, initialData }) => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [selectedColor, setSelectedColor] = useState(COLORS[2]); // Default Purple
+  const [selectedColor, setSelectedColor] = useState(COLORS[2]);
   const [isColorOpen, setIsColorOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Reset state when modal opens
   useEffect(() => {
     if (isOpen) {
       if (initialData) {
@@ -44,7 +44,6 @@ export const AddSubjectModal: React.FC<AddSubjectModalProps> = ({ isOpen, onClos
     }
   }, [isOpen, initialData]);
 
-  // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -72,8 +71,6 @@ export const AddSubjectModal: React.FC<AddSubjectModalProps> = ({ isOpen, onClos
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
       <div className="bg-[#1e1b2e] border border-white/10 rounded-xl w-full max-w-md shadow-2xl animate-in fade-in zoom-in duration-200">
-        
-        {/* Header */}
         <div className="flex justify-between items-start p-6 pb-2">
           <div>
             <h2 className="text-xl font-semibold text-white">{initialData ? 'Edit Subject' : 'Add New Subject'}</h2>
@@ -90,7 +87,6 @@ export const AddSubjectModal: React.FC<AddSubjectModalProps> = ({ isOpen, onClos
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
-          {/* Subject Name Input */}
           <div className="space-y-2">
             <label className="block text-sm font-medium text-white">
               Subject Name <span className="text-red-400">*</span>
@@ -105,7 +101,6 @@ export const AddSubjectModal: React.FC<AddSubjectModalProps> = ({ isOpen, onClos
             />
           </div>
 
-          {/* Description Input */}
           <div className="space-y-2">
             <label className="block text-sm font-medium text-white">
               Description (Optional)
@@ -119,7 +114,6 @@ export const AddSubjectModal: React.FC<AddSubjectModalProps> = ({ isOpen, onClos
             />
           </div>
 
-          {/* Color Theme Picker */}
           <div className="space-y-2 relative" ref={dropdownRef}>
             <label className="block text-sm font-medium text-white">
               Color Theme
@@ -168,7 +162,6 @@ export const AddSubjectModal: React.FC<AddSubjectModalProps> = ({ isOpen, onClos
             )}
           </div>
 
-          {/* Actions */}
           <div className="flex justify-end gap-3 pt-2">
             <button
               type="button"

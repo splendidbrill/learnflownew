@@ -1,12 +1,6 @@
-/**
- * Utility function to merge class names
- */
-export function cn(...classes: Array<string | undefined | null | false>): string {
-    return (
-      classes
-        .filter((cls): cls is string => Boolean(cls && typeof cls === "string"))
-        .join(" ")
-        .trim() || ""
-    );
-  }
-  
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}

@@ -1,7 +1,8 @@
-
+"use client";
 import React, { useState, useEffect, useRef } from 'react';
-import { MoreHorizontal, BookOpen, Plus, Edit2, Trash2 } from 'lucide-react';
-import { Subject, Book } from '../types';
+import { MoreHorizontal, BookOpen, Edit2, Trash2, Plus } from 'lucide-react';
+import { Subject, Book } from '@/app/dashboard/types';
+
 
 interface SubjectCardProps {
   subject: Subject;
@@ -25,7 +26,6 @@ export const SubjectCard: React.FC<SubjectCardProps> = ({
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
 
-  // Close menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (cardRef.current && !cardRef.current.contains(event.target as Node)) {
@@ -108,6 +108,7 @@ export const SubjectCard: React.FC<SubjectCardProps> = ({
         {subject.recentBooks.map((book) => (
           <div 
             key={book.id} 
+            onClick={() => onBookClick(book)}
             className="group relative flex items-center gap-2"
           >
             <button 
@@ -118,7 +119,7 @@ export const SubjectCard: React.FC<SubjectCardProps> = ({
               <span className="text-sm text-gray-300 truncate">{book.title}</span>
             </button>
             
-            {/* Book Menu Trigger - Visible on Hover or Active */}
+            {/* Book Menu Trigger */}
             <div className={`absolute right-1 ${activeMenu === book.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
                <div className="relative">
                 <button 
@@ -192,3 +193,137 @@ export const SubjectCard: React.FC<SubjectCardProps> = ({
     </div>
   );
 };
+
+
+
+// second card
+
+// import React from 'react';
+// import { MoreVertical, Book as BookIcon, Trash2, Edit2, ChevronRight } from 'lucide-react';
+// import { Subject, Book } from '../types';
+
+// interface SubjectCardProps {
+//   subject: Subject;
+//   onAddBook: (subjectId: string) => void;
+//   onBookClick: (book: Book) => void; // <--- Ensure this prop exists
+//   onEditSubject: (subject: Subject) => void;
+//   onDeleteSubject: (id: string) => void;
+//   onEditBook: (subjectId: string, book: Book) => void;
+//   onDeleteBook: (subjectId: string, bookId: string) => void;
+// }
+
+// export const SubjectCard: React.FC<SubjectCardProps> = ({
+//   subject,
+//   onAddBook,
+//   onBookClick,
+//   onEditSubject,
+//   onDeleteSubject,
+//   onEditBook,
+//   onDeleteBook
+// }) => {
+//   return (
+//     <div className="group relative bg-[#1e0a3c] rounded-2xl p-6 border border-white/5 hover:border-purple-500/30 transition-all duration-300 hover:shadow-[0_0_20px_rgba(147,51,234,0.15)] flex flex-col h-[320px]">
+//       {/* Header */}
+//       <div className="flex justify-between items-start mb-4">
+//         <div className="flex items-center gap-3">
+//           <div 
+//             className="w-12 h-12 rounded-xl flex items-center justify-center shadow-lg"
+//             style={{ backgroundColor: `${subject.color}20` }}
+//           >
+//             <BookIcon className="w-6 h-6" style={{ color: subject.color }} />
+//           </div>
+//           <div>
+//             <h3 className="font-bold text-white text-lg leading-tight">{subject.name}</h3>
+//             <p className="text-gray-400 text-xs mt-1">{subject.bookCount} books</p>
+//           </div>
+//         </div>
+        
+//         {/* Dropdown Menu */}
+//         <div className="relative group/menu">
+//           <button className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-colors">
+//             <MoreVertical className="w-5 h-5" />
+//           </button>
+          
+//           <div className="absolute right-0 top-full mt-2 w-32 bg-[#2a1352] border border-white/10 rounded-lg shadow-xl opacity-0 invisible group-hover/menu:opacity-100 group-hover/menu:visible transition-all z-20">
+//             <button 
+//               onClick={() => onEditSubject(subject)}
+//               className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-white/10 hover:text-white flex items-center gap-2 first:rounded-t-lg"
+//             >
+//               <Edit2 className="w-3 h-3" /> Edit
+//             </button>
+//             <button 
+//               onClick={() => onDeleteSubject(subject.id)}
+//               className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-red-500/10 hover:text-red-300 flex items-center gap-2 last:rounded-b-lg"
+//             >
+//               <Trash2 className="w-3 h-3" /> Delete
+//             </button>
+//           </div>
+//         </div>
+//       </div>
+
+//       <p className="text-gray-400 text-sm mb-6 line-clamp-2 min-h-[40px]">
+//         {subject.description || "No description provided."}
+//       </p>
+
+//       {/* Book List (Scrollable) */}
+//       <div className="flex-1 overflow-y-auto pr-1 space-y-2 mb-4 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+//         {subject.recentBooks && subject.recentBooks.length > 0 ? (
+//           subject.recentBooks.map((book) => (
+//             <div 
+//               key={book.id}
+//               onClick={() => onBookClick(book)} // <--- CLICK HANDLER IS HERE
+//               className="group/book flex items-center justify-between p-2 rounded-lg hover:bg-white/5 cursor-pointer border border-transparent hover:border-white/5 transition-all"
+//             >
+//               <div className="flex items-center gap-3 overflow-hidden">
+//                 <div className="w-8 h-10 bg-gray-800 rounded flex-shrink-0 overflow-hidden">
+//                   {book.coverUrl ? (
+//                     <img src={book.coverUrl} alt="" className="w-full h-full object-cover" />
+//                   ) : (
+//                     <div className="w-full h-full flex items-center justify-center bg-white/5">
+//                       <BookIcon className="w-4 h-4 text-gray-500" />
+//                     </div>
+//                   )}
+//                 </div>
+//                 <div className="truncate">
+//                   <p className="text-sm text-gray-200 truncate font-medium group-hover/book:text-purple-300 transition-colors">
+//                     {book.title}
+//                   </p>
+//                   <p className="text-xs text-gray-500 truncate">{book.author || 'Unknown'}</p>
+//                 </div>
+//               </div>
+              
+//               <div className="flex items-center opacity-0 group-hover/book:opacity-100 transition-opacity">
+//                  <button 
+//                    onClick={(e) => { e.stopPropagation(); onEditBook(subject.id, book); }}
+//                    className="p-1.5 text-gray-400 hover:text-white hover:bg-white/10 rounded"
+//                  >
+//                    <Edit2 className="w-3 h-3" />
+//                  </button>
+//                  <button 
+//                    onClick={(e) => { e.stopPropagation(); onDeleteBook(subject.id, book.id); }}
+//                    className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded"
+//                  >
+//                    <Trash2 className="w-3 h-3" />
+//                  </button>
+//                  <ChevronRight className="w-4 h-4 text-gray-600 group-hover/book:text-purple-400 ml-1" />
+//               </div>
+//             </div>
+//           ))
+//         ) : (
+//           <div className="h-full flex flex-col items-center justify-center text-gray-500 text-xs text-center border-2 border-dashed border-white/5 rounded-lg p-4">
+//             <p>No books yet</p>
+//             <p className="mt-1 opacity-50">Add one to start learning</p>
+//           </div>
+//         )}
+//       </div>
+
+//       {/* Footer Action */}
+//       <button 
+//         onClick={() => onAddBook(subject.id)}
+//         className="w-full py-2.5 rounded-xl border border-dashed border-purple-500/30 text-purple-300 hover:bg-purple-500/10 hover:border-purple-500/50 hover:text-purple-200 transition-all text-sm font-medium flex items-center justify-center gap-2"
+//       >
+//         <span>+ Add New Book</span>
+//       </button>
+//     </div>
+//   );
+// };

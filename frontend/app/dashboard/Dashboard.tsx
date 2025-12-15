@@ -1,22 +1,30 @@
 "use client";
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Book, BookOpen, CheckCircle, BarChart2, Plus, Clock, Library, TrendingUp } from 'lucide-react';
+import { 
+  Book as BookIcon, 
+  BookOpen, 
+  CheckCircle, 
+  BarChart2, 
+  Plus, 
+  Clock, 
+  Library, 
+  TrendingUp,
+  AlertTriangle
+} from 'lucide-react';
 
-import {useStore} from '../../store/dashboard'; // // Adjust path
-import { StatCard } from './StatCard';
-import { SubjectCard } from './SubjectCard';
-import { QuickActionCard } from './QuickActionCard';
-import { AddSubjectModal } from './AddSubjectModal';
-import { AddBookModal } from './AddBookModal';
-import { ConfirmationModal } from './ConfirmationModal';
+import { useStore } from './store';
+import { StatCard } from './components/StatCard';
+import { SubjectCard } from './components/SubjectCard';
+import { QuickActionCard } from './components/QuickActionCard';
+import { AddSubjectModal } from './components/AddSubjectModal';
+import { AddBookModal } from './components/AddBookModal';
+import { ConfirmationModal } from './components/ConfirmationModal';
 
-
-import { Subject, Book as BookType } from '../../types/dashboard'; // Adjust path
+// Import Types
+import { Subject, Book } from './types'; 
 import { Sidebar } from './Sidebar'; 
 import { User } from '@supabase/supabase-js';
-
-// import { createClient } from '../../../lib/supabase/client';
 import { createClient } from '@/lib/supabase/client';
 
 interface DashboardProps {
@@ -36,7 +44,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
     addBook, 
     updateBook, 
     deleteBook, 
-    // @ts-ignore 
     setSubjects 
   } = useStore();
   
@@ -44,10 +51,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
   const [isSubjectModalOpen, setIsSubjectModalOpen] = useState(false);
   const [editingSubject, setEditingSubject] = useState<Subject | null>(null);
   
+  // Modal State for Books
   const [bookModalState, setBookModalState] = useState<{ 
     isOpen: boolean; 
     subjectId: string | null; 
-    editBook?: BookType | null 
+    editBook?: Book | null 
   }>({
     isOpen: false,
     subjectId: null,
@@ -71,28 +79,33 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
     const fetchData = async () => {
       try {
         const { data, error } = await supabase
-          .from('subjects')
-          .select(`*, books(*)`)
+          .from('courses')
+          .select(`*, course_books(*)`) // <--- CHANGE 1: Fetch from new table
           .order('created_at', { ascending: true });
 
         if (error) throw error;
 
-        if (data && setSubjects) {
+        if (data) {
           const formattedSubjects: Subject[] = data.map((s: any) => ({
             id: s.id,
+            user_id: s.user_id,
             name: s.name,
             color: s.color,
             description: s.description,
-            bookCount: s.books.length,
-            recentBooks: s.books.map((b: any) => ({
+            created_at: s.created_at,
+            // CHANGE 2: Map 'course_books' to 'bookCount'
+            bookCount: s.course_books ? s.course_books.length : 0,
+            // CHANGE 3: Map 'course_books' to 'recentBooks'
+            recentBooks: s.course_books ? s.course_books.map((b: any) => ({
               id: b.id,
               title: b.title,
               author: b.author,
               description: b.description,
               color: s.color,
-              fileUrl: b.file_url
-            })),
-            isActive: true,
+              fileUrl: b.file_url,
+              analogy_topic: b.analogy_topic // Ensure this is captured
+            })) : [],
+            isActive: false,
             progress: 0
           }));
           setSubjects(formattedSubjects);
@@ -104,49 +117,90 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
       }
     };
 
-    fetchData();
+    if (user) {
+      fetchData();
+    }
   }, [user, supabase, setSubjects]);
 
   // --- Handlers ---
 
-  const handleBookClick = (book: BookType) => {
-    // NAVIGATE TO THE NEW DYNAMIC ROUTE
+  const handleBookClick = (book: Book) => {
+    console.log("Navigating to book:", book.id);
+    // router.push(`/dashboard/book/${book.id}`);
     router.push(`/dashboard/book/${book.id}`);
   };
 
   const handleAddSubject = async (data: { name: string; color: string; description: string }) => {
+    console.log("Attempting to save subject:", data);
+
+    // 1. EDIT MODE
     if (editingSubject) {
       const { error } = await supabase
-        .from('subjects')
-        .update({ name: data.name, color: data.color, description: data.description })
+      .from('courses')
+        .update({ 
+          name: data.name, 
+          color: data.color, 
+          description: data.description 
+        })
         .eq('id', editingSubject.id);
-      if (!error) {
-        updateSubject(editingSubject.id, data);
-        setEditingSubject(null);
+        
+      if (error) {
+        console.error("Error updating subject:", error);
+        alert(`Failed to update subject: ${error.message}`);
+        return; 
       }
-    } else {
+
+      // Safe update using Partial<Subject>
+      updateSubject(editingSubject.id, data);
+      setEditingSubject(null);
+      setIsSubjectModalOpen(false);
+    } 
+    // 2. CREATE MODE
+    else {
+      // NOTE: If this fails with "cache" errors, change 'subjects' to 'learning_subjects'
       const { data: newSubject, error } = await supabase
-        .from('subjects')
-        .insert([{ ...data, user_id: user.id }])
+        .from('courses')
+        .insert([{ 
+            name: data.name, 
+            description: data.description,
+            color: data.color, 
+            user_id: user.id 
+        }])
         .select()
         .single();
-      if (!error && newSubject) {
-        addSubject({ ...data, id: newSubject.id } as any); 
+        
+      if (error) {
+        console.error("Error creating subject:", error);
+        alert(`Failed to create subject: ${error.message} (Check console for details)`);
+        return; 
+      }
+
+      if (newSubject) {
+        // Construct the full Subject object for the store
+        const subjectToAdd: Subject = {
+            id: newSubject.id,
+            user_id: user.id,
+            created_at: newSubject.created_at,
+            name: data.name,
+            description: data.description,
+            color: data.color,
+            bookCount: 0,
+            recentBooks: [],
+            isActive: false,
+            progress: 0
+        };
+        addSubject(subjectToAdd); 
+        setIsSubjectModalOpen(false); 
       }
     }
-    setIsSubjectModalOpen(false);
   };
 
-  const handleBookSaved = (book: BookType) => {
+  const handleBookSaved = (book: Book) => {
     const { subjectId, editBook } = bookModalState;
     if (!subjectId) return;
+    
     if (editBook) {
-      updateBook(subjectId, book.id, {
-        title: book.title,
-        author: book.author || '',
-        description: book.description || '',
-        file: book.file
-      });
+      updateBook(subjectId, book.id, book);
     } else {
       addBook(subjectId, book);
     }
@@ -174,7 +228,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
     setBookModalState({ isOpen: true, subjectId, editBook: null });
   };
 
-  const handleEditBook = (subjectId: string, book: BookType) => {
+  const handleEditBook = (subjectId: string, book: Book) => {
     setBookModalState({ isOpen: true, subjectId, editBook: book });
   };
 
@@ -193,18 +247,39 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
   };
 
   const handleConfirmDelete = async () => {
-    if (deleteConfirm.type === 'subject' && deleteConfirm.id) {
-      const { error } = await supabase.from('subjects').delete().eq('id', deleteConfirm.id);
-      if (!error) {
+    try {
+      if (deleteConfirm.type === 'subject' && deleteConfirm.id) {
+        // 1. Send Delete Request to Database
+        const { error } = await supabase
+          .from('courses') // Make sure this matches your DB table name
+          .delete()
+          .eq('id', deleteConfirm.id);
+        
+        if (error) {
+           console.error("Database Delete Failed:", error);
+           throw error; // This jumps to the catch block
+        }
+
+        // 2. Only update UI if Database succeeded
         deleteSubject(deleteConfirm.id);
-      }
-    } else if (deleteConfirm.type === 'book' && deleteConfirm.id && deleteConfirm.subjectId) {
-      const { error } = await supabase.from('books').delete().eq('id', deleteConfirm.id);
-      if (!error) {
+      } 
+      else if (deleteConfirm.type === 'book' && deleteConfirm.id && deleteConfirm.subjectId) {
+        const { error } = await supabase
+          .from('course_books')
+          .delete()
+          .eq('id', deleteConfirm.id);
+          
+        if (error) throw error;
+        
         deleteBook(deleteConfirm.subjectId, deleteConfirm.id);
       }
+    } catch (error: any) {
+      // 3. Show the actual error to you
+      alert(`Cannot delete: ${error.message || "Database permission denied"}`);
+      console.error(error);
+    } finally {
+      setDeleteConfirm({ ...deleteConfirm, isOpen: false });
     }
-    setDeleteConfirm({ ...deleteConfirm, isOpen: false });
   };
 
   const addingBookSubjectName = subjects.find(s => s.id === bookModalState.subjectId)?.name || '';
@@ -228,7 +303,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
         <div className="max-w-7xl mx-auto space-y-10 pb-10">
           <header className="flex justify-between items-start">
             <div>
-              <h1 className="text-3xl md:text-4xl font-bold mb-1 text-white">Welcome back!</h1>
+              <h1 className="text-3xl md:text-4xl font-bold mb-1 text-white">
+                Welcome back, {user.user_metadata?.full_name || 'Scholar'}!
+              </h1>
               <p className="text-purple-300/80 text-sm md:text-base">Pick up where you left off</p>
             </div>
           </header>
@@ -236,7 +313,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
           {/* Stats Section */}
           <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             <StatCard title="Subjects" value={stats.subjects} icon={BookOpen} />
-            <StatCard title="Total Books" value={stats.totalBooks} icon={Book} />
+            <StatCard title="Total Books" value={stats.totalBooks} icon={BookIcon} />
             <StatCard title="Completed" value={stats.completed} icon={CheckCircle} />
             <StatCard title="Progress" value={`${stats.progress}%`} icon={BarChart2} showProgressBar progressValue={stats.progress} />
           </section>
@@ -288,7 +365,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
                       key={subject.id} 
                       subject={subject} 
                       onAddBook={handleAddBookClick}
-                      onBookClick={handleBookClick} // UPDATED: Navigates to new route
+                      onBookClick={handleBookClick}
                       onEditSubject={handleEditSubject}
                       onDeleteSubject={handleDeleteSubjectRequest}
                       onEditBook={handleEditBook}

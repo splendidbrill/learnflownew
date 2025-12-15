@@ -1,153 +1,130 @@
-import { create } from 'zustand';
-import { StoreState, Subject, Book } from '../types/dashboard';
-
-const BOOK_COLORS = ['#fbbf24', '#4ade80', '#f87171', '#60a5fa', '#c084fc', '#fb7185'];
+import { create } from "zustand";
+import type { StoreState, Subject, Book } from "@/types/dashboard";
 
 export const useStore = create<StoreState>((set) => ({
+  /* =========================
+     STATE
+  ========================= */
   stats: {
     subjects: 0,
     totalBooks: 0,
     completed: 0,
     progress: 0,
   },
-  subjects: [], // Start empty, wait for DB fetch
-  activeBook: null,
-  
-  // --- NEW ACTION: Set all subjects from DB ---
-  setSubjects: (subjects) => set((state) => {
-    // Recalculate stats based on the fetched data
-    const totalSubjects = subjects.length;
-    const totalBooks = subjects.reduce((acc, sub) => acc + (sub.bookCount || 0), 0);
 
-    return {
+  subjects: [],
+  activeBook: null,
+
+  /* =========================
+     SUBJECT ACTIONS
+  ========================= */
+  setSubjects: (subjects) =>
+    set(() => ({
       subjects,
       stats: {
-        ...state.stats,
-        subjects: totalSubjects,
-        totalBooks: totalBooks
-      }
-    };
-  }),
+        subjects: subjects.length,
+        totalBooks: subjects.reduce(
+          (sum, s) => sum + (s.recentBooks?.length ?? 0),
+          0
+        ),
+        completed: 0,
+        progress: 0,
+      },
+    })),
 
-  addSubject: (newSubjectData) => set((state) => {
-    // FIX: Use the ID provided by DB, or fallback to random if not provided
-    const id = (newSubjectData as any).id || Math.random().toString(36).substring(2, 9);
-
-    const newSubject: Subject = {
-      id: id,
-      name: newSubjectData.name,
-      description: newSubjectData.description,
-      color: newSubjectData.color,
-      bookCount: 0,
-      isActive: true,
-      progress: 0,
-      recentBooks: []
-    };
-
-    return {
-      subjects: [...state.subjects, newSubject],
+  addSubject: (subject) =>
+    set((state) => ({
+      subjects: [
+        ...state.subjects,
+        {
+          ...subject,
+          recentBooks: [],
+          bookCount: 0,
+        },
+      ],
       stats: {
         ...state.stats,
-        subjects: state.stats.subjects + 1
-      }
-    };
-  }),
+        subjects: state.stats.subjects + 1,
+      },
+    })),
 
-  updateSubject: (id, data) => set((state) => ({
-    subjects: state.subjects.map(sub => 
-      sub.id === id 
-        ? { ...sub, name: data.name, color: data.color, description: data.description }
-        : sub
-    )
-  })),
+  updateSubject: (id, data) =>
+    set((state) => ({
+      subjects: state.subjects.map((s) =>
+        s.id === id ? { ...s, ...data } : s
+      ),
+    })),
 
-  deleteSubject: (id) => set((state) => {
-    const subjectToDelete = state.subjects.find(s => s.id === id);
-    const bookCount = subjectToDelete ? subjectToDelete.bookCount : 0;
+  deleteSubject: (id) =>
+    set((state) => {
+      const subject = state.subjects.find((s) => s.id === id);
+      const removedBooks = subject?.recentBooks?.length ?? 0;
 
-    return {
-      subjects: state.subjects.filter(s => s.id !== id),
+      return {
+        subjects: state.subjects.filter((s) => s.id !== id),
+        stats: {
+          ...state.stats,
+          subjects: state.stats.subjects - 1,
+          totalBooks: state.stats.totalBooks - removedBooks,
+        },
+      };
+    }),
+
+  /* =========================
+     BOOK ACTIONS
+  ========================= */
+  addBook: (subjectId, book) =>
+    set((state) => ({
+      subjects: state.subjects.map((s) =>
+        s.id === subjectId
+          ? {
+              ...s,
+              recentBooks: [...(s.recentBooks ?? []), book],
+              bookCount: (s.bookCount ?? 0) + 1,
+            }
+          : s
+      ),
       stats: {
         ...state.stats,
-        subjects: state.stats.subjects - 1,
-        totalBooks: state.stats.totalBooks - bookCount
-      }
-    };
-  }),
+        totalBooks: state.stats.totalBooks + 1,
+      },
+    })),
 
-  addBook: (subjectId, bookDetails) => set((state) => {
-    const randomColor = BOOK_COLORS[Math.floor(Math.random() * BOOK_COLORS.length)];
-    
-    // FIX: Use the ID provided by DB
-    const id = (bookDetails as any).id || Math.random().toString(36).substring(2, 9);
+  updateBook: (subjectId, bookId, data) =>
+    set((state) => ({
+      subjects: state.subjects.map((s) =>
+        s.id === subjectId
+          ? {
+              ...s,
+              recentBooks: (s.recentBooks ?? []).map((b) =>
+                b.id === bookId ? { ...b, ...data } : b
+              ),
+            }
+          : s
+      ),
+    })),
 
-    const newBook: Book = {
-      id: id,
-      title: bookDetails.title,
-      author: bookDetails.author,
-      description: bookDetails.description,
-      color: randomColor,
-      file: bookDetails.file,
-      // @ts-ignore - You should add fileUrl to your Book type
-      fileUrl: (bookDetails as any).fileUrl 
-    };
-
-    const updatedSubjects = state.subjects.map(sub => {
-      if (sub.id === subjectId) {
-        return {
-          ...sub,
-          bookCount: sub.bookCount + 1,
-          recentBooks: [newBook, ...sub.recentBooks]
-        };
-      }
-      return sub;
-    });
-
-    return {
-      subjects: updatedSubjects,
+  deleteBook: (subjectId, bookId) =>
+    set((state) => ({
+      subjects: state.subjects.map((s) =>
+        s.id === subjectId
+          ? {
+              ...s,
+              recentBooks: (s.recentBooks ?? []).filter(
+                (b) => b.id !== bookId
+              ),
+              bookCount: Math.max((s.bookCount ?? 1) - 1, 0),
+            }
+          : s
+      ),
       stats: {
         ...state.stats,
-        totalBooks: state.stats.totalBooks + 1
-      }
-    };
-  }),
+        totalBooks: Math.max(state.stats.totalBooks - 1, 0),
+      },
+    })),
 
-  updateBook: (subjectId, bookId, data) => set((state) => ({
-    subjects: state.subjects.map(sub => {
-      if (sub.id === subjectId) {
-        return {
-          ...sub,
-          recentBooks: sub.recentBooks.map(book => 
-            book.id === bookId 
-              ? { ...book, title: data.title, author: data.author, description: data.description }
-              : book
-          )
-        };
-      }
-      return sub;
-    })
-  })),
-
-  deleteBook: (subjectId, bookId) => set((state) => {
-    const updatedSubjects = state.subjects.map(sub => {
-      if (sub.id === subjectId) {
-        return {
-          ...sub,
-          bookCount: sub.bookCount - 1,
-          recentBooks: sub.recentBooks.filter(b => b.id !== bookId)
-        };
-      }
-      return sub;
-    });
-
-    return {
-      subjects: updatedSubjects,
-      stats: {
-        ...state.stats,
-        totalBooks: state.stats.totalBooks - 1
-      }
-    };
-  }),
-
-  setActiveBook: (book) => set({ activeBook: book })
+  /* =========================
+     ACTIVE BOOK
+  ========================= */
+  setActiveBook: (book) => set(() => ({ activeBook: book })),
 }));
