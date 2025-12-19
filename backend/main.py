@@ -228,6 +228,7 @@
 
 import os
 import time
+import re
 import json
 import ast
 from pathlib import Path
@@ -239,7 +240,9 @@ from dotenv import load_dotenv
 
 # --- IMPORTS ---
 from langchain_community.document_loaders import PyPDFLoader
+
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 # NEW: Use Groq instead of Google
 from langchain_groq import ChatGroq 
 
@@ -284,116 +287,195 @@ class IngestRequest(BaseModel):
     interest: str
     bookType: str
 
+# ... imports (make sure json, ast, PyPDFLoader, etc. are imported) ...
+
 async def process_book(book_id: str, file_url: str, interest: str, book_type: str):
-    print(f"🚀 Starting Smart Ingestion (Groq) for Book: {book_id}")
+    print(f"🚀 Starting Structure Scan for Book: {book_id}")
+    
+    # 1. Update Status in 'course_books' (IMMEDIATELY)
+    supabase.table("course_books").update({"status": "processing"}).eq("id", book_id).execute()
     
     try:
+        # 2. Load PDF & Extract Text (First 20 pages only)
         loader = PyPDFLoader(file_url)
         pages = loader.load()
         print(f"📄 Loaded {len(pages)} pages")
 
-        # --- SMART SKIPPER ---
-        start_index = 0
-        for i, page in enumerate(pages[:20]):
-            content_lower = page.page_content.lower()
-            if "table of contents" in content_lower or ("contents" in content_lower[:50]):
-                print(f"📑 Found Table of Contents at Page {i+1}. Skipping pre-amble.")
-                start_index = i
-                break
+        toc_text = ""
+        # Scan first 20 pages (usually enough for ToC)
+        for p in pages[:20]:
+            toc_text += p.page_content + "\n"
+
+        # 3. ASK AI FOR THE MAP
+        prompt = f"""
+        You are a JSON parser. 
+        Analyze this book text. Find the "Table of Contents" (or Contents/Index).
+        Extract a list of Chapters and their STARTING PAGE NUMBER.
         
-        pages = pages[start_index:]
+        RULES:
+        1. Ignore the Preface, Foreword, or Introduction if they are roman numerals (i, ii, etc).
+        2. Look for patterns like "Chapter 1 ..... 5" or "1. The Beginning ..... 5".
+        3. Return JSON ONLY. No conversation.
         
-        # Groq handles smaller chunks better/faster
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=4000, chunk_overlap=400)
-        chunks = text_splitter.split_documents(pages)
-        print(f"🔪 Split into {len(chunks)} text chunks")
+        TEXT PREVIEW:
+        {toc_text[:15000]}...
 
-        current_chapter_id = None
-        chapter_count = 1
+        OUTPUT FORMAT:
+        {{
+            "chapters": [
+                {{ "title": "Chapter 1: Name", "start_page": 5 }},
+                {{ "title": "Chapter 2: Name", "start_page": 12 }}
+            ]
+        }}
+        """
         
-        # Initial Chapter
-        first_chap_res = supabase.table("chapters").insert({
-            "book_id": book_id,
-            "title": "Introduction / Table of Contents",
-            "order_index": 1
-        }).execute()
-        current_chapter_id = first_chap_res.data[0]['id']
-
-        for i, chunk in enumerate(chunks):
-            
-            prompt = f"""
-            You are an AI Tutor. Analyze this text chunk from a {book_type} book.
-            
-            USER INTEREST: {interest}
-            CONTEXT: {chunk.page_content[:2500]}...
-
-            TASKS:
-            1. Detect if this chunk STARTS a new chapter.
-            2. Generate a concise explanation using analogies related to {interest}.
-
-            OUTPUT FORMAT: Return ONLY valid JSON.
-            {{
-                "is_new_chapter": true/false,
-                "chapter_title": "Title Here",
-                "explanation": "Your explanation here"
-            }}
-            """
-
-            try:
-                ai_response = llm.invoke(prompt)
+        # Using Llama-3.1-8b-Instant (Fast & Cheap)
+        ai_response = llm.invoke(prompt)
+        raw_content = ai_response.content
+        
+        # 4. ROBUST JSON EXTRACTION (REGEX)
+        # This finds the first '{' and the last '}' to isolate the JSON, ignoring extra text.
+        try:
+            json_match = re.search(r"\{.*\}", raw_content, re.DOTALL)
+            if json_match:
+                clean_json = json_match.group(0)
+                data = json.loads(clean_json)
+            else:
+                raise ValueError("No JSON object found in response")
                 
-                # Clean Response
-                clean_text = ai_response.content
-                if "```json" in clean_text:
-                    clean_text = clean_text.split("```json")[1].split("```")[0].strip()
-                elif "```" in clean_text:
-                    clean_text = clean_text.split("```")[1].strip()
-                
-                try:
-                    data = json.loads(clean_text)
-                except:
-                    try:
-                        data = ast.literal_eval(clean_text)
-                    except:
-                        data = {"explanation": "Analysis failed", "is_new_chapter": False}
+        except Exception as parse_error:
+            print(f"⚠️ JSON Parse Failed. Raw AI Response: {raw_content[:200]}...")
+            raise parse_error
 
-                # Logic
-                if data.get("is_new_chapter") and data.get("chapter_title"):
-                    print(f"🔖 New Chapter: {data['chapter_title']}")
-                    chapter_count += 1
-                    chap_res = supabase.table("chapters").insert({
-                        "book_id": book_id,
-                        "title": data['chapter_title'],
-                        "order_index": chapter_count
-                    }).execute()
-                    current_chapter_id = chap_res.data[0]['id']
+        chapters_list = data.get("chapters", [])
+        print(f"🗺️ Found {len(chapters_list)} chapters in structure.")
 
-                # Save
-                supabase.table("paragraphs").insert({
-                    "chapter_id": current_chapter_id,
-                    "content": chunk.page_content,
-                    "explanation": data.get("explanation", "No explanation."),
-                    "order_index": i,
-                    "is_completed": False
-                }).execute()
-                
-                print(f"✅ Processed Chunk {i}/{len(chunks)}")
-                # Groq is fast, but let's be polite
-                time.sleep(2) 
+        # 5. Save Structure to DB (Skeleton)
+        for i, chap in enumerate(chapters_list):
+            supabase.table("chapters").insert({
+                "book_id": book_id,
+                "title": chap['title'],
+                "order_index": i + 1,
+                "start_page_num": chap.get('start_page', 0)
+            }).execute()
 
-            except Exception as e:
-                print(f"⚠️ Error on chunk {i}: {e}")
-                continue
-            
-        print(f"✅ Finished processing Book: {book_id}")
-        
+        # 6. Mark as Completed in 'course_books'
+        supabase.table("course_books").update({"status": "completed"}).eq("id", book_id).execute()
+        print(f"✅ Structure Scan Complete for: {book_id}")
+
     except Exception as e:
-        print(f"❌ Error processing book: {str(e)}")
+        print(f"❌ Error scanning book: {str(e)}")
+        # 7. Mark as Failed in 'course_books'
+        supabase.table("course_books").update({"status": "failed"}).eq("id", book_id).execute()
+        
+
 
 @app.post("/ingest")
 async def ingest_book(req: IngestRequest, background_tasks: BackgroundTasks):
+    # Update 'course_books' immediately
+    supabase.table("course_books").update({"status": "processing"}).eq("id", req.bookId).execute()
+    
     background_tasks.add_task(process_book, req.bookId, req.fileUrl, req.interest, req.bookType)
     return {"status": "processing_started"}
+
+# ... imports ...
+
+
+# 1. NEW ENDPOINT
+class GenerateChapterRequest(BaseModel):
+    chapterId: str
+
+@app.post("/generate_chapter")
+async def generate_chapter(req: GenerateChapterRequest, background_tasks: BackgroundTasks):
+    background_tasks.add_task(process_chapter_content, req.chapterId)
+    return {"status": "started", "message": "Generating chapter content..."}
+
+# 2. THE LOGIC
+async def process_chapter_content(chapter_id: str):
+    print(f"⚡ Generating content for Chapter ID: {chapter_id}")
+    
+    try:
+        # A. Get Chapter Info & Book URL
+        chapter = supabase.table("chapters").select("*").eq("id", chapter_id).single().execute()
+        chap_data = chapter.data
+        book_id = chap_data['book_id']
+        start_page = chap_data['start_page_num']
+        
+        # Get Book URL
+        book = supabase.table("course_books").select("file_url").eq("id", book_id).single().execute()
+        file_url = book.data['file_url']
+
+        # B. Find End Page (Look for the next chapter)
+        # We find the chapter with the next highest order_index
+        next_chap = supabase.table("chapters")\
+            .select("start_page_num")\
+            .eq("book_id", book_id)\
+            .gt("order_index", chap_data['order_index'])\
+            .order("order_index")\
+            .limit(1)\
+            .execute()
+
+        if next_chap.data:
+            end_page = next_chap.data[0]['start_page_num']
+        else:
+            end_page = start_page + 30 # Fallback: Read next 30 pages if it's the last chapter
+
+        print(f"📖 Reading pages {start_page} to {end_page}...")
+
+        # C. Load ONLY Specific Pages
+        loader = PyPDFLoader(file_url)
+        # Note: PyPDFLoader loads ALL, but we slice the array in memory (fast enough for <50MB books)
+        # Optimization: For huge books, we would use pypdf directly to read specific byte ranges.
+        all_pages = loader.load()
+        
+        # Safety check for bounds
+        total_pages = len(all_pages)
+        start_idx = max(0, start_page - 1) # PDF pages are 0-indexed
+        end_idx = min(total_pages, end_page - 1)
+        
+        chapter_pages = all_pages[start_idx:end_idx]
+        chapter_text = "\n".join([p.page_content for p in chapter_pages])
+
+        # D. Smart Chunking (Group ~3 pages together)
+        # 3 pages * ~500 words/page = 1500 words ~ 6000 chars
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=6000, 
+            chunk_overlap=500
+        )
+        chunks = text_splitter.split_text(chapter_text)
+        
+        print(f"🧩 Split into {len(chunks)} learning sections.")
+
+        # E. AI Processing Loop
+        for i, chunk in enumerate(chunks):
+            prompt = f"""
+            You are an expert tutor. I will give you a section of a book chapter.
+            Your job is to rewrite this into a clear, engaging learning module.
+            
+            RULES:
+            1. Use Markdown formatting (headers, bold text).
+            2. Explain complex ideas simply (using analogies if helpful).
+            3. Keep it detailed but easy to read.
+            
+            TEXT TO PROCESS:
+            {chunk}
+            """
+            
+            response = llm.invoke(prompt)
+            content = response.content
+
+            # Save to 'paragraphs' table
+            supabase.table("paragraphs").insert({
+                "chapter_id": chapter_id,
+                "content": content,
+                "order_index": i + 1,
+                "is_completed": False
+            }).execute()
+            
+        print(f"✅ Finished generating Chapter: {chap_data['title']}")
+
+    except Exception as e:
+        print(f"❌ Error generating chapter: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
