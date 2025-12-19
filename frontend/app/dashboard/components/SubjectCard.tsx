@@ -132,7 +132,8 @@ export const SubjectCard: React.FC<SubjectCardProps> = ({
                 {activeMenu === book.id && (
                   <div className="absolute right-0 top-full mt-1 w-32 bg-[#1e1b2e] border border-white/10 rounded-lg shadow-xl z-30 overflow-hidden animate-in fade-in zoom-in-95 duration-100">
                     <button 
-                      onClick={() => {
+                      onClick={(e) => {
+                        e.stopPropagation();
                         onEditBook(subject.id, book);
                         setActiveMenu(null);
                       }}
@@ -141,7 +142,8 @@ export const SubjectCard: React.FC<SubjectCardProps> = ({
                       <Edit2 className="w-3 h-3" /> Edit
                     </button>
                     <button 
-                      onClick={() => {
+                      onClick={(e) => {
+                        e.stopPropagation();
                         onDeleteBook(subject.id, book.id);
                         setActiveMenu(null);
                       }}

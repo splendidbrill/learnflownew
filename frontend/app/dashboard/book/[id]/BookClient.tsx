@@ -195,21 +195,20 @@
 
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
-  ArrowLeft, 
-  Menu, 
-  X, 
-  Send, 
-  MessageSquare, 
-  BookOpen, 
-  CheckCircle,
-  MoreVertical,
-  ChevronRight,
-  LogOut // Icon for back button
+  ArrowLeft, Menu, X, Send, MessageSquare, BookOpen, 
+  CheckCircle, LogOut, Loader2, FileText, ChevronRight, AlertCircle
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+
+// --- 1. TYPES ---
+interface Message {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+}
 
 interface BookClientProps {
   bookId: string;
@@ -219,6 +218,7 @@ interface Chapter {
   id: string;
   title: string;
   order_index: number;
+  start_page_num: number; // NEW: Added for page mapping
   progress?: number;
 }
 
@@ -228,134 +228,255 @@ interface Paragraph {
   is_completed: boolean;
 }
 
+interface Book {
+  id: string;
+  title: string;
+  file_url: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed'; // NEW: Status tracking
+}
+
 export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
   const router = useRouter();
   const supabase = createClient();
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // --- State ---
-  const [book, setBook] = useState<any | null>(null);
+  // --- 2. STATE ---
+  const [book, setBook] = useState<Book | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [selectedChapter, setSelectedChapter] = useState<Chapter | null>(null);
   const [paragraphs, setParagraphs] = useState<Paragraph[]>([]);
   
+  // UI State
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [isLoading, setIsLoading] = useState(true);
-  const [chatMessage, setChatMessage] = useState("");
+  const [isLoadingData, setIsLoadingData] = useState(true);
+  const [bookStatus, setBookStatus] = useState<string>("pending"); // NEW
+  const [isGenerating, setIsGenerating] = useState(false); // NEW
 
-  // --- Fetch Data ---
-  useEffect(() => {
-    const init = async () => {
-      // 1. Fetch Book Info
-      const { data: bookData } = await supabase
-        .from('course_books')
-        .select('*')
-        .eq('id', bookId)
-        .single();
+  // Chat State
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState("");
+  const [isAiThinking, setIsAiThinking] = useState(false);
+
+  // --- 3. DATA FETCHING & POLLING ---
+  
+  const fetchBookData = async () => {
+    if (!bookId) return;
+
+    // A. Fetch Book
+    // NOTE: using 'books' table to match backend. If your table is 'course_books', change it here.
+    const { data: bookData } = await supabase
+      .from('course_books') 
+      .select('*')
+      .eq('id', bookId)
+      .single();
+
+    if (bookData) {
       setBook(bookData);
+      setBookStatus(bookData.status || 'pending');
+    }
 
-      // 2. Fetch Chapters
-      const { data: chapterData } = await supabase
-        .from('chapters')
-        .select('*')
-        .eq('book_id', bookId)
-        .order('order_index', { ascending: true });
-      
-      if (chapterData) {
-        setChapters(chapterData.map(c => ({
-          ...c,
-          progress: Math.floor(Math.random() * 100) // Mock progress
-        })));
-      }
-      
-      setIsLoading(false);
-    };
+    // B. Fetch Chapters
+    const { data: chapterData } = await supabase
+      .from('chapters')
+      .select('*')
+      .eq('book_id', bookId)
+      .order('order_index', { ascending: true });
 
-    if (bookId) init();
+    if (chapterData) {
+      setChapters(chapterData);
+    }
+    
+    setIsLoadingData(false);
+  };
+
+  // Initial Load
+  useEffect(() => {
+    fetchBookData();
   }, [bookId]);
 
-  // --- Fetch Paragraphs ---
+  // Polling Effect (The Live Watcher)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // Only refresh if backend is working
+      if (bookStatus === "processing") {
+        console.log("🔄 Polling backend status...");
+        fetchBookData();
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [bookStatus, bookId]);
+
+  // Load Paragraphs when Chapter Selected
   useEffect(() => {
     const loadParagraphs = async () => {
       if (!selectedChapter) return;
-      
       const { data } = await supabase
         .from('paragraphs')
         .select('*')
         .eq('chapter_id', selectedChapter.id)
         .order('order_index', { ascending: true });
-        
       setParagraphs(data || []);
     };
     loadParagraphs();
   }, [selectedChapter]);
 
+  // --- 4. HANDLERS ---
 
-  // --- Debug Functions (Now with Alerts) ---
-  const createDummyData = async () => {
-    if (!bookId) return;
-    console.log("Creating dummy chapters for book:", bookId);
+  // Generate Map Handler (Connects to Python Backend)
+  const handleGenerateMap = async () => {
+    if (!book?.file_url) return alert("Error: Book URL missing");
     
-    const dummies = [
-      { book_id: bookId, title: "The Power of Thought", order_index: 0 },
-      { book_id: bookId, title: "Desire: The Turning Point", order_index: 1 },
-      { book_id: bookId, title: "Faith and Visualization", order_index: 2 },
-    ];
-    
-    const { error } = await supabase.from('chapters').insert(dummies);
-    
-    if (error) {
-      alert(`Error creating chapters: ${error.message}`);
-      console.error(error);
-    } else {
-      alert("Chapters created! Reloading...");
-      window.location.reload();
+    setIsGenerating(true);
+    setBookStatus("processing"); // Instant UI update
+
+    try {
+      const response = await fetch("http://localhost:8000/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bookId: bookId,
+          fileUrl: book.file_url,
+          interest: "General Learning", // Dynamic later
+          bookType: "Textbook"
+        }),
+      });
+
+      if (!response.ok) throw new Error("Backend failed");
+
+    } catch (e: any) {
+      console.error(e);
+      setIsGenerating(false);
+      setBookStatus("failed");
+      alert("Failed to connect to AI Backend: " + e.message);
     }
   };
 
-  const createDummyParagraphs = async () => {
-    if (!selectedChapter) return;
-    
-    const dummies = [
-      { chapter_id: selectedChapter.id, content: "Truly, 'thoughts are things,' and powerful things at that, when they are mixed with definiteness of purpose, persistence, and a burning desire for their translation into riches, or other material objects.", order_index: 0 },
-      { chapter_id: selectedChapter.id, content: "A little over thirty years ago, Edwin C. Barnes discovered how true it is that men really do think and grow rich. His discovery did not come about at one sitting.", order_index: 1 },
-      { chapter_id: selectedChapter.id, content: "It came little by little, beginning with a burning desire to become a business associate of the great Edison.", order_index: 2 },
-    ];
-    
-    const { error } = await supabase.from('paragraphs').insert(dummies);
-    
-    if (error) {
-       alert(`Error creating paragraphs: ${error.message}`);
-    } else {
-       // Refresh paragraphs locally without full reload
-       const { data } = await supabase.from('paragraphs').select('*').eq('chapter_id', selectedChapter.id);
-       setParagraphs(data || []);
+  // Chat Handler
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || !selectedChapter) return;
+
+    const userMessage: Message = { id: Date.now().toString(), role: 'user', content: input };
+    setMessages(prev => [...prev, userMessage]);
+    setInput("");
+    setIsAiThinking(true);
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [...messages, userMessage],
+          chapterId: selectedChapter.id
+        }),
+      });
+
+      if (!response.ok) throw new Error(response.statusText);
+      if (!response.body) return;
+
+      const aiMessageId = (Date.now() + 1).toString();
+      setMessages(prev => [...prev, { id: aiMessageId, role: 'assistant', content: "" }]);
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let done = false;
+      let accumulatedText = "";
+
+      while (!done) {
+        const { value, done: doneReading } = await reader.read();
+        done = doneReading;
+        const chunkValue = decoder.decode(value, { stream: true });
+        accumulatedText += chunkValue;
+
+        setMessages(prev => prev.map(msg => 
+          msg.id === aiMessageId ? { ...msg, content: accumulatedText } : msg
+        ));
+      }
+    } catch (error: any) {
+      alert("Chat Error: " + error.message);
+    } finally {
+      setIsAiThinking(false);
     }
   };
 
-  // --- Renders ---
-  
-  const renderChapterGrid = () => (
-    <div className="p-10 max-w-5xl mx-auto w-full animate-in fade-in duration-500">
+  // --- 5. SUB-COMPONENTS ---
+
+  // The Grid View (Status & Chapter List)
+ // The Grid View (Status & Chapter List)
+ const renderDashboard = () => (
+  <div className="h-full overflow-y-auto w-full animate-in fade-in duration-500 scrollbar-thin scrollbar-thumb-purple-900/50 p-10">
+    
+    <div className="max-w-5xl mx-auto">
+      {/* Header */}
       <div className="text-center mb-12">
         <div className="w-16 h-16 bg-purple-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4 text-purple-400">
           <BookOpen className="w-8 h-8" />
         </div>
-        <h1 className="text-3xl font-bold text-white mb-2">{book?.title || 'Loading...'}</h1>
-        <p className="text-gray-400">Select a chapter to start reading</p>
+        <h1 className="text-3xl font-bold text-white mb-2">{book?.title || 'Loading Book...'}</h1>
+        
+        {/* Status Badge */}
+        <div className="flex justify-center mt-4">
+          <span className={`px-3 py-1 rounded-full text-xs font-medium border ${
+            bookStatus === 'completed' ? 'bg-green-900/20 text-green-400 border-green-500/30' :
+            bookStatus === 'processing' ? 'bg-blue-900/20 text-blue-400 border-blue-500/30 animate-pulse' :
+            bookStatus === 'failed' ? 'bg-red-900/20 text-red-400 border-red-500/30' :
+            'bg-gray-800 text-gray-400 border-gray-700'
+          }`}>
+            Status: {bookStatus.toUpperCase()}
+          </span>
+        </div>
       </div>
 
-      {chapters.length === 0 ? (
-        <div className="text-center py-20 border-2 border-dashed border-white/10 rounded-xl bg-white/5">
-          <p className="text-gray-400 mb-4">No chapters found.</p>
+      {/* --- STATUS STATES --- */}
+      
+      {/* 1. Processing State */}
+      {bookStatus === "processing" && (
+        <div className="text-center py-16 border-2 border-dashed border-blue-500/30 rounded-2xl bg-blue-500/5 animate-pulse">
+          <Loader2 className="w-10 h-10 text-blue-400 animate-spin mx-auto mb-4" />
+          <h2 className="text-xl font-bold text-white">Scanning Book Structure...</h2>
+          <p className="text-gray-400 mt-2">
+            AI is reading the Table of Contents.<br/>
+            Chapters will appear below automatically.
+          </p>
+        </div>
+      )}
+
+      {/* 2. Pending State (The Big Button) */}
+      {bookStatus === "pending" && (
+        <div className="text-center py-16 border-2 border-dashed border-white/10 rounded-2xl bg-white/5">
+          <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+          <h2 className="text-xl font-bold text-white mb-2">Ready to Process</h2>
+          <p className="text-gray-400 mb-8 max-w-md mx-auto">
+            Scan the book to generate a clickable map of chapters.
+          </p>
+          
           <button 
-            className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-sm font-medium transition-colors"
-            onClick={createDummyData} 
+            onClick={handleGenerateMap}
+            disabled={isGenerating}
+            className="group px-8 py-4 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold transition-all shadow-lg hover:shadow-purple-500/25 flex items-center gap-2 mx-auto disabled:opacity-50"
           >
-            (Debug) Generate Dummy Chapters
+            {isGenerating ? (
+              <><Loader2 className="w-5 h-5 animate-spin" /> Starting AI...</>
+            ) : (
+              <>✨ Generate Course Map <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" /></>
+            )}
           </button>
         </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      )}
+
+      {/* 3. Failed State */}
+      {bookStatus === "failed" && (
+        <div className="text-center py-10 bg-red-900/10 border border-red-500/20 rounded-xl">
+          <AlertCircle className="w-10 h-10 text-red-500 mx-auto mb-3" />
+          <h3 className="text-white font-bold">Processing Failed</h3>
+          <button onClick={() => setBookStatus('pending')} className="text-sm text-red-400 hover:text-red-300 underline mt-2">Try Again</button>
+        </div>
+      )}
+
+      {/* 4. Completed/Existing State (Chapter Grid) */}
+      {(bookStatus === "completed" || chapters.length > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-8 pb-10">
           {chapters.map((chapter) => (
             <button
               key={chapter.id}
@@ -364,72 +485,63 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
             >
               <div className="flex justify-between items-start mb-4">
                 <span className="text-xs font-mono text-purple-400 bg-purple-500/10 px-2 py-1 rounded">
-                  CH {chapter.order_index + 1}
+                  CH {chapter.order_index}
                 </span>
-                {chapter.progress === 100 && <CheckCircle className="w-4 h-4 text-green-500" />}
+                {/* Visual indicator if page num is known */}
+                {chapter.start_page_num > 0 && (
+                  <span className="text-[10px] text-gray-500 font-mono">Pg {chapter.start_page_num}</span>
+                )}
               </div>
               <h3 className="text-lg font-bold text-white mb-2 line-clamp-2">{chapter.title}</h3>
-              <div className="w-full bg-black/40 h-1.5 rounded-full mt-4 overflow-hidden">
-                <div 
-                  className="h-full bg-gradient-to-r from-purple-600 to-blue-600" 
-                  style={{ width: `${chapter.progress}%` }}
-                />
-              </div>
             </button>
           ))}
         </div>
       )}
     </div>
-  );
+  </div>
+);
 
+  // The Reader View
   const renderReader = () => (
     <div className="flex flex-col h-full bg-[#0f0518] overflow-y-auto scrollbar-thin scrollbar-thumb-purple-900/50">
       <div className="sticky top-0 bg-[#0f0518]/95 backdrop-blur z-10 border-b border-white/5 p-4 flex items-center gap-4">
-         <button 
-           onClick={() => setSelectedChapter(null)}
-           className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white"
-         >
+         <button onClick={() => setSelectedChapter(null)} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white">
            <ArrowLeft className="w-5 h-5" />
          </button>
          <div>
            <h2 className="text-white font-semibold">{selectedChapter?.title}</h2>
-           <p className="text-xs text-gray-400">Reading Mode</p>
+           <p className="text-xs text-gray-400">
+             {selectedChapter?.start_page_num ? `Starts at Page ${selectedChapter.start_page_num}` : 'Reading Mode'}
+           </p>
          </div>
       </div>
 
       <div className="max-w-3xl mx-auto w-full p-8 space-y-8">
         {paragraphs.length > 0 ? (
           paragraphs.map((para) => (
-            <div 
-              key={para.id} 
-              className={`group relative p-6 rounded-2xl border transition-all duration-300 ${para.is_completed ? 'bg-purple-900/10 border-purple-500/20' : 'bg-[#1e0a3c]/50 border-transparent hover:border-white/10'}`}
-            >
+            <div key={para.id} className="group relative p-6 rounded-2xl border bg-[#1e0a3c]/50 border-transparent hover:border-white/10 transition-all">
               <p className="text-lg text-gray-200 leading-relaxed font-serif">{para.content}</p>
-              <div className="absolute -right-12 top-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button className="p-2 bg-[#2a1352] text-purple-300 rounded-full hover:bg-purple-600 hover:text-white">
-                  <MessageSquare className="w-4 h-4" />
-                </button>
-              </div>
             </div>
           ))
         ) : (
           <div className="text-center text-gray-500 py-20">
-            <p>No content here.</p>
-            <button className="text-purple-400 text-sm mt-2 hover:underline" onClick={createDummyParagraphs}>
-              (Debug) Generate Content
-            </button>
+            <p>No content generated for this chapter yet.</p>
+            {/* Phase 2: We will add a 'Generate This Chapter' button here later */}
+            <p className="text-xs mt-2">Context-aware generation coming in Phase 2.</p>
           </div>
         )}
       </div>
     </div>
   );
+  
 
-  if (isLoading) return <div className="bg-[#13002b] h-screen text-white flex items-center justify-center">Loading...</div>;
+  // --- 6. MAIN RENDER ---
+  if (isLoadingData) return <div className="bg-[#13002b] h-screen text-white flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-purple-500"/></div>;
 
   return (
-    <div className="flex h-screen bg-[#13002b] overflow-hidden">
+    <div className="flex h-screen bg-[#13002b] overflow-hidden font-sans">
       
-      {/* 1. LEFT SIDEBAR */}
+      {/* LEFT SIDEBAR */}
       <div className={`flex-shrink-0 bg-[#0a0212] border-r border-white/5 transition-all duration-300 flex flex-col ${isSidebarOpen ? 'w-80' : 'w-0 opacity-0 overflow-hidden'}`}>
         <div className="p-4 border-b border-white/5 flex justify-between items-center">
           <h2 className="text-white font-semibold">Table of Contents</h2>
@@ -437,8 +549,6 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
             <X className="w-5 h-5" />
           </button>
         </div>
-        
-        {/* Chapters List */}
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {chapters.map((chapter) => (
             <button
@@ -446,68 +556,90 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
               onClick={() => setSelectedChapter(chapter)}
               className={`w-full flex items-center gap-3 p-3 rounded-lg text-sm text-left transition-colors ${selectedChapter?.id === chapter.id ? 'bg-purple-600/20 text-purple-300 border border-purple-500/20' : 'text-gray-400 hover:bg-white/5'}`}
             >
-              <span className="flex-shrink-0 w-6 h-6 rounded bg-white/5 flex items-center justify-center text-xs font-mono">{chapter.order_index + 1}</span>
-              <span className="truncate">{chapter.title}</span>
+              <span className="flex-shrink-0 w-6 h-6 rounded bg-white/5 flex items-center justify-center text-xs font-mono">{chapter.order_index}</span>
+              <span className="truncate flex-1">{chapter.title}</span>
+              {chapter.start_page_num > 0 && <span className="text-[10px] text-gray-600">{chapter.start_page_num}</span>}
             </button>
           ))}
         </div>
-
-        {/* --- BACK TO DASHBOARD BUTTON (Bottom) --- */}
         <div className="p-4 border-t border-white/10 mt-auto">
-          <button 
-            onClick={() => router.push('/dashboard')}
-            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white rounded-xl transition-all border border-white/5 group"
-          >
+          <button onClick={() => router.push('/dashboard')} className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white rounded-xl transition-all border border-white/5 group">
             <LogOut className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
             <span className="font-medium">Back to Dashboard</span>
           </button>
         </div>
       </div>
 
-      {/* 2. MIDDLE SECTION */}
+      {/* MIDDLE SECTION */}
       <div className="flex-1 flex flex-col min-w-0 bg-[#13002b] relative">
         {!isSidebarOpen && (
-          <button 
-            onClick={() => setIsSidebarOpen(true)}
-            className="absolute top-4 left-4 z-20 bg-[#1e0a3c] border border-white/10 p-2 rounded-lg text-white shadow-lg hover:bg-purple-600 transition-colors flex items-center gap-2"
-          >
+          <button onClick={() => setIsSidebarOpen(true)} className="absolute top-4 left-4 z-20 bg-[#1e0a3c] border border-white/10 p-2 rounded-lg text-white shadow-lg hover:bg-purple-600 transition-colors flex items-center gap-2">
             <Menu className="w-4 h-4" />
             <span className="text-xs font-medium">Chapters</span>
           </button>
         )}
         <div className="flex-1 overflow-hidden relative">
-          {selectedChapter ? renderReader() : renderChapterGrid()}
+          {selectedChapter ? renderReader() : renderDashboard()}
         </div>
       </div>
 
-      {/* 3. RIGHT SIDEBAR (Chat) */}
+      {/* RIGHT SIDEBAR (CHAT) - Kept exactly as it was */}
       <div className="w-[400px] flex-shrink-0 bg-[#0f0518] border-l border-white/5 flex flex-col">
         <div className="p-4 border-b border-white/5 bg-[#1e0a3c]/30">
           <h2 className="text-white font-semibold flex items-center gap-2">
             <MessageSquare className="w-4 h-4 text-purple-400" />
             AI Tutor
+            {selectedChapter && <span className="text-xs font-normal text-gray-500 ml-2">(Context: {selectedChapter.title})</span>}
           </h2>
         </div>
-        <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
-          <div className="w-16 h-16 bg-white/5 rounded-2xl flex items-center justify-center mb-4">
-             <MessageSquare className="w-8 h-8 text-gray-600" />
-          </div>
-          <h3 className="text-white font-medium mb-2">Start a conversation</h3>
-          <p className="text-sm text-gray-500">Ask questions about this chapter.</p>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {messages.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center text-center opacity-50">
+               <MessageSquare className="w-8 h-8 mb-2" />
+               <p className="text-sm">Select a chapter and ask a question!</p>
+            </div>
+          ) : (
+            messages.map((m) => (
+              <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[85%] rounded-2xl p-3 text-sm ${
+                  m.role === 'user' 
+                  ? 'bg-purple-600 text-white rounded-br-none' 
+                  : 'bg-[#1e0a3c] border border-white/10 text-gray-200 rounded-bl-none'
+                }`}>
+                  {m.content}
+                </div>
+              </div>
+            ))
+          )}
+          {isAiThinking && (
+            <div className="flex justify-start">
+              <div className="bg-[#1e0a3c] border border-white/10 p-3 rounded-2xl rounded-bl-none">
+                <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
+              </div>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
         </div>
+
         <div className="p-4 border-t border-white/5 bg-[#0a0212]">
-          <div className="relative">
+          <form onSubmit={handleSendMessage} className="relative">
             <input 
               type="text" 
-              value={chatMessage}
-              onChange={(e) => setChatMessage(e.target.value)}
-              placeholder="Ask about this chapter..."
-              className="w-full bg-[#1e0a3c] border border-white/10 text-white rounded-xl py-3 px-4 pr-12 focus:outline-none focus:border-purple-500 transition-colors"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              disabled={!selectedChapter || isAiThinking}
+              placeholder={selectedChapter ? "Ask about this chapter..." : "Select a chapter first"}
+              className="w-full bg-[#1e0a3c] border border-white/10 text-white rounded-xl py-3 px-4 pr-12 focus:outline-none focus:border-purple-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             />
-            <button className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-purple-600 rounded-lg text-white hover:bg-purple-500 transition-colors">
+            <button 
+              type="submit"
+              disabled={!selectedChapter || !input.trim() || isAiThinking}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-purple-600 rounded-lg text-white hover:bg-purple-500 transition-colors disabled:opacity-50"
+            >
               <Send className="w-4 h-4" />
             </button>
-          </div>
+          </form>
         </div>
       </div>
 
