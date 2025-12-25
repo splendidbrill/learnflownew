@@ -1,229 +1,3 @@
-# import os
-# from dotenv import load_dotenv
-
-# # Add 'Form' to this line
-# from fastapi import FastAPI, HTTPException, File, UploadFile, Form
-# from supabase import create_client, Client
-# from pydantic import BaseModel
-# from services.explainer import generate_explanation
-# from fastapi import File, UploadFile
-# from services.book_parser import parse_pdf_to_blocks
-
-# # 1. Load the secrets from .env
-# load_dotenv()
-
-# # 2. Initialize the App
-# app = FastAPI(title="LearnFlow API")
-
-# # 3. Connect to Database
-# url = os.environ.get("SUPABASE_URL")
-# key = os.environ.get("SUPABASE_KEY")
-
-# if not url or not key:
-#     print("❌ ERROR: Missing Supabase URL or Key in .env file")
-# else:
-#     print("✅ Supabase Credentials Loaded")
-
-# # Initialize Supabase Client
-# try:
-#     supabase: Client = create_client(url, key)
-#     print("✅ Connected to Supabase")
-# except Exception as e:
-#     print(f"❌ Failed to connect to Supabase: {e}")
-
-# # 4. The Health Check (To test if it works)
-# @app.get("/")
-# def read_root():
-#     return {"status": "active", "message": "LearnFlow Backend is Online 🚀"}
-
-# # 5. Test Database Connection Endpoint
-# @app.get("/test-db")
-# def test_db():
-#     try:
-#         # Fetch the first row from 'profiles' just to see if we can read data
-#         response = supabase.table("profiles").select("*").limit(1).execute()
-#         return {"db_status": "connected", "data": response.data}
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
-
-# # --- NEW: AI Endpoint ---
-
-# class ExplainRequest(BaseModel):
-#     text: str
-#     interests: list = ["general"]
-#     book_type: str = "general"
-
-# @app.post("/api/explain")
-# def explain_text(request: ExplainRequest):
-#     print(f"🧠 Generating explanation for: {request.book_type}")
-    
-#     result = generate_explanation(
-#         content=request.text,
-#         interests=request.interests,
-#         book_type=request.book_type
-#     )
-    
-#     return result
-
-# # --- NEW: Upload Endpoint ---
-
-# @app.post("/api/upload-book")
-# async def upload_book(
-#    title: str = Form(...),
-#     user_id: str = Form(...), 
-#     file: UploadFile = File(...)
-# ):
-#     print(f"📚 Uploading book: {title} for user {user_id}")
-    
-#     # 1. Read the file
-#     content = await file.read()
-    
-#     # 2. Parse PDF
-#     blocks = parse_pdf_to_blocks(content)
-#     print(f"✅ Extracted {len(blocks)} paragraphs.")
-
-#     # 3. Create Book Entry in Supabase
-#     book_res = supabase.table("books").insert({
-#         "user_id": user_id,
-#         "title": title,
-#         "total_blocks": len(blocks),
-#         "processed": True
-#     }).execute()
-    
-#     book_id = book_res.data[0]['id']
-
-#     # 4. Save Blocks to Supabase
-#     # We batch them to be faster (insert 50 at a time)
-#     batch_size = 50
-#     for i in range(0, len(blocks), batch_size):
-#         batch = blocks[i:i + batch_size]
-#         # Add book_id to every block
-#         for block in batch:
-#             block['book_id'] = book_id
-#             # Remove page_number if your DB doesn't have that column, or add it to content
-#             del block['page_number'] 
-        
-#         supabase.table("content_blocks").insert(batch).execute()
-#         print(f"💾 Saved batch {i} to {i + len(batch)}")
-
-#     return {"status": "success", "book_id": book_id, "blocks_count": len(blocks)}
-
-# if __name__ == "__main__":
-#     import uvicorn
-#     # Run the server on port 8000
-#     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-# backend/main.py
-# import os
-# import uuid
-# from fastapi import FastAPI, HTTPException, File, UploadFile, Form
-# from pydantic import BaseModel
-# from dotenv import load_dotenv
-# from supabase import create_client, Client
-# from services.book_parser import parse_pdf_to_content
-# from services.explainer import generate_explanation
-
-# load_dotenv()
-
-# SUPABASE_URL = os.getenv("SUPABASE_URL")
-# SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-
-# if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-#     raise RuntimeError("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in environment.")
-
-# supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-
-# app = FastAPI()
-
-# @app.post("/api/upload-book")
-# async def upload_book(
-#     title: str = Form(...),
-#     author: str = Form(None),
-#     user_id: str = Form(...),
-#     subject_id: str = Form(...),
-#     file: UploadFile = File(...)
-# ):
-#     file_bytes = await file.read()
-#     if not file_bytes:
-#         raise HTTPException(status_code=400, detail="Empty file")
-
-#     # parse PDF
-#     parsed = parse_pdf_to_content(file_bytes)
-#     if not parsed:
-#         raise HTTPException(status_code=400, detail="Could not parse PDF or no text extracted")
-
-#     # upload file to Supabase Storage (bucket: books)
-#     storage_path = f"{user_id}/{uuid.uuid4().hex}_{file.filename}"
-#     upload_res = supabase.storage.from_("books").upload(storage_path, file_bytes, {"contentType": "application/pdf", "upsert": True})
-#     if upload_res.get("error"):
-#         # upload error
-#         raise HTTPException(status_code=500, detail=str(upload_res.get("error")))
-
-#     # get public url
-#     public_res = supabase.storage.from_("books").get_public_url(storage_path)
-#     # supabase client returns either dict or object depending on SDK; handle commonly expected keys:
-#     file_url = public_res.get("publicUrl") or public_res.get("public_url") or public_res
-
-#     # insert book row
-#     book_payload = {
-#         "user_id": user_id,
-#         "subject_id": subject_id,
-#         "title": title,
-#         "author": author or "Unknown",
-#         "file_url": file_url,
-#         "total_pages": parsed[-1]["page_number"] if parsed else 0
-#     }
-#     book_insert = supabase.table("books").insert(book_payload).select("*").execute()
-#     if book_insert.error:
-#         raise HTTPException(status_code=500, detail=f"Book insert failed: {book_insert.error.message}")
-
-#     book_row = book_insert.data[0]
-#     book_id = book_row["id"]
-
-#     # create default chapter
-#     supabase.table("chapters").insert({
-#         "book_id": book_id,
-#         "title": "Chapter 1",
-#         "order_index": 1,
-#         "start_page": 1
-#     }).execute()
-
-#     # insert book_content in batches
-#     batch = []
-#     batch_size = 100
-#     for i, item in enumerate(parsed):
-#         batch.append({
-#             "book_id": book_id,
-#             "content": item["content"],
-#             "sequence_index": i + 1,
-#             "page_number": item["page_number"]
-#         })
-#         if len(batch) >= batch_size:
-#             res = supabase.table("book_content").insert(batch).execute()
-#             if res.error:
-#                 raise HTTPException(status_code=500, detail=f"Insert book_content failed: {res.error.message}")
-#             batch = []
-#     if batch:
-#         res = supabase.table("book_content").insert(batch).execute()
-#         if res.error:
-#             raise HTTPException(status_code=500, detail=f"Insert book_content failed: {res.error.message}")
-
-#     return {"status": "success", "book": book_row}
-
-# class ExplainRequest(BaseModel):
-#     text: str
-#     interests: list = ["general"]
-#     book_type: str = "general"
-
-# @app.post("/api/explain")
-# def explain(req: ExplainRequest):
-#     # call explainer
-#     result = generate_explanation(req.text, req.interests, req.book_type)
-#     return {"result": result}
-
-# if __name__ == "__main__":
-#     import uvicorn
-#     uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
 import os
@@ -237,12 +11,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client, Client
 from dotenv import load_dotenv
+from pydantic import BaseModel
+from typing import List
 
 # --- IMPORTS ---
 from langchain_community.document_loaders import PyPDFLoader
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-
+from fastapi.responses import StreamingResponse
+from langchain_core.messages import HumanMessage, SystemMessage
 # NEW: Use Groq instead of Google
 from langchain_groq import ChatGroq 
 
@@ -286,6 +63,19 @@ class IngestRequest(BaseModel):
     fileUrl: str
     interest: str
     bookType: str
+
+
+# Define the structure we want the AI to return
+class ParagraphObj(BaseModel):
+    content: str
+    type: str # 'text' or 'header'
+
+class SectionObj(BaseModel):
+    title: str
+    paragraphs: List[str]
+
+class ChapterStructure(BaseModel):
+    sections: List[SectionObj]
 
 # ... imports (make sure json, ast, PyPDFLoader, etc. are imported) ...
 
@@ -385,28 +175,123 @@ async def ingest_book(req: IngestRequest, background_tasks: BackgroundTasks):
 class GenerateChapterRequest(BaseModel):
     chapterId: str
 
+# --- NEW: CHAT ENDPOINT MODELS & LOGIC ---
 @app.post("/generate_chapter")
 async def generate_chapter(req: GenerateChapterRequest, background_tasks: BackgroundTasks):
+    # This calls the function we just updated
     background_tasks.add_task(process_chapter_content, req.chapterId)
     return {"status": "started", "message": "Generating chapter content..."}
 
+class ChatRequest(BaseModel):
+    messages: list
+    chapterId: str
+    currentParagraphId: str | None = None  # Use | None for optional in Python 3.10+
+    userResponse: str = ""
+
+@app.post("/chat")
+async def chat_endpoint(req: ChatRequest):
+    print(f"💬 Chat Request for Paragraph: {req.currentParagraphId}")
+
+    # 1. SETUP THE CONTEXT
+    # Inside chat_endpoint in main.py
+
+    # 1. SETUP THE CONTEXT
+    system_context = "You are a helpful AI Tutor."
+    
+    # If we are focused on a specific paragraph, fetch it!
+    if req.currentParagraphId:
+        try:
+            # A. Fetch Paragraph Content
+            para_res = supabase.table("paragraphs").select("content, section_title").eq("id", req.currentParagraphId).single().execute()
+            
+            if para_res.data:
+                para_content = para_res.data['content']
+                section_title = para_res.data.get('section_title', 'General Section')
+
+                # B. Fetch User Interests 
+                # (Ideally passed from frontend, but hardcoded fallback for MVP safety)
+                interests = ["Football", "Tech"] 
+
+                # C. Construct the "Tutor" System Prompt
+                # ... inside chat_endpoint ...
+
+                # C. Construct the "Tutor" System Prompt
+                system_context = f"""
+                You are an expert AI Tutor.
+                
+                CURRENT FOCUS:
+                Section: {section_title}
+                Text: "{para_content}"
+                
+                USER PROFILE:
+                Interests: {', '.join(interests)}
+                
+                INSTRUCTIONS:
+                1. EXPLANATION MODE (Triggered by "Explain"):
+                   - Explain the 'Text' using a metaphor related to {interests[0]}.
+                   - Keep it concise.
+                   - End with: "Any questions, or shall we move to the next paragraph?"
+                
+                2. Q&A MODE (Triggered by user questions):
+                   - If the user asks "What is...", "Why...", "How...", or ANY question about the content:
+                   - Answer strictly based on the 'Text'.
+                   - Do NOT output [NEXT].
+                   - After answering, ask: "Does that clarify it? Ready for the next paragraph?"
+                
+                3. MOVEMENT MODE (Triggered by agreement):
+                   - ONLY if the user says "Yes", "Next", "Ok", "Clear", or "Go ahead" (indicating they are done with THIS paragraph):
+                   - Reply with exactly: "[NEXT]"
+                   - Do not output anything else.
+                """
+                
+                # 4. QUIZ: If the user says "Quiz me", ask 1 multiple-choice question.
+                # """
+        except Exception as e:
+            print(f"⚠️ Error fetching paragraph context: {e}")
+            system_context = "You are an AI Tutor. I am having trouble reading the specific paragraph, so I will answer generally."
+
+    # 2. PREPARE MESSAGES FOR AI
+    langchain_messages = [SystemMessage(content=system_context)]
+    
+    for msg in req.messages:
+        if msg.get('role') == 'user':
+            langchain_messages.append(HumanMessage(content=msg.get('content')))
+
+    # 3. STREAMING GENERATOR
+    async def response_generator():
+        try:
+            # Make sure 'llm' is defined in your global scope (it is, from lines 54-58)
+            async for chunk in llm.astream(langchain_messages):
+                yield chunk.content
+        except Exception as e:
+            yield f"Error generating response: {str(e)}"
+
+    return StreamingResponse(response_generator(), media_type="text/plain")
+
+# ---------------------------------------------------------
+# ... process_book and process_chapter_content go below here ...
+
+# @app.post("/generate_chapter")
+# async def generate_chapter(req: GenerateChapterRequest, background_tasks: BackgroundTasks):
+#     background_tasks.add_task(process_chapter_content, req.chapterId)
+#     return {"status": "started", "message": "Generating chapter content..."}
+
 # 2. THE LOGIC
 async def process_chapter_content(chapter_id: str):
-    print(f"⚡ Generating content for Chapter ID: {chapter_id}")
+    print(f"⚡ Generating granular structure for Chapter ID: {chapter_id}")
     
     try:
-        # A. Get Chapter Info & Book URL
+        # 1. Fetch Chapter Info
         chapter = supabase.table("chapters").select("*").eq("id", chapter_id).single().execute()
         chap_data = chapter.data
         book_id = chap_data['book_id']
         start_page = chap_data['start_page_num']
         
-        # Get Book URL
+        # 2. Fetch File URL
         book = supabase.table("course_books").select("file_url").eq("id", book_id).single().execute()
         file_url = book.data['file_url']
 
-        # B. Find End Page (Look for the next chapter)
-        # We find the chapter with the next highest order_index
+        # 3. Determine End Page
         next_chap = supabase.table("chapters")\
             .select("start_page_num")\
             .eq("book_id", book_id)\
@@ -415,68 +300,106 @@ async def process_chapter_content(chapter_id: str):
             .limit(1)\
             .execute()
 
-        if next_chap.data:
-            end_page = next_chap.data[0]['start_page_num']
-        else:
-            end_page = start_page + 30 # Fallback: Read next 30 pages if it's the last chapter
-
+        end_page = next_chap.data[0]['start_page_num'] if next_chap.data else start_page + 20
         print(f"📖 Reading pages {start_page} to {end_page}...")
 
-        # C. Load ONLY Specific Pages
+        # 4. Load & Extract Text
         loader = PyPDFLoader(file_url)
-        # Note: PyPDFLoader loads ALL, but we slice the array in memory (fast enough for <50MB books)
-        # Optimization: For huge books, we would use pypdf directly to read specific byte ranges.
         all_pages = loader.load()
         
-        # Safety check for bounds
         total_pages = len(all_pages)
-        start_idx = max(0, start_page - 1) # PDF pages are 0-indexed
+        start_idx = max(0, start_page - 1)
         end_idx = min(total_pages, end_page - 1)
-        
         chapter_pages = all_pages[start_idx:end_idx]
         chapter_text = "\n".join([p.page_content for p in chapter_pages])
-
-        # D. Smart Chunking (Group ~3 pages together)
-        # 3 pages * ~500 words/page = 1500 words ~ 6000 chars
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=6000, 
-            chunk_overlap=500
-        )
-        chunks = text_splitter.split_text(chapter_text)
         
-        print(f"🧩 Split into {len(chunks)} learning sections.")
+        if not chapter_text:
+            print("⚠️ Warning: Extracted text is empty.")
+            return
 
-        # E. AI Processing Loop
-        for i, chunk in enumerate(chunks):
+        # 5. INTELLIGENT PARSING (Updated for Stability)
+        # Reduced chunk size to 4000 to prevent JSON syntax errors
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=4000, chunk_overlap=200)
+        raw_chunks = text_splitter.split_text(chapter_text)
+
+        global_order_index = 1
+
+        for raw_chunk in raw_chunks:
+            # We explicitly ask for "Strict JSON" and escaping
             prompt = f"""
-            You are an expert tutor. I will give you a section of a book chapter.
-            Your job is to rewrite this into a clear, engaging learning module.
+            You are a rigorous data parser. Convert the text below into strict JSON.
             
             RULES:
-            1. Use Markdown formatting (headers, bold text).
-            2. Explain complex ideas simply (using analogies if helpful).
-            3. Keep it detailed but easy to read.
+            1. Identify Section Headers (e.g., "**Title**") or use "General" if none.
+            2. Split text into paragraphs.
+            3. ESCAPE all double quotes inside the text (e.g. " becomes \").
+            4. Do NOT use trailing commas.
+            5. Return ONLY valid JSON.
             
-            TEXT TO PROCESS:
-            {chunk}
+            RAW TEXT:
+            {raw_chunk}
+
+            JSON STRUCTURE:
+            {{
+                "sections": [
+                    {{
+                        "title": "Section Name",
+                        "paragraphs": ["Para 1 content...", "Para 2 content..."]
+                    }}
+                ]
+            }}
             """
             
             response = llm.invoke(prompt)
-            content = response.content
+            clean_content = response.content
 
-            # Save to 'paragraphs' table
-            supabase.table("paragraphs").insert({
-                "chapter_id": chapter_id,
-                "content": content,
-                "order_index": i + 1,
-                "is_completed": False
-            }).execute()
-            
-        print(f"✅ Finished generating Chapter: {chap_data['title']}")
+            # Helper: Try to clean common JSON errors from LLMs
+            try:
+                # Find the JSON object
+                json_match = re.search(r"\{.*\}", clean_content, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                    # Attempt to parse
+                    data = json.loads(json_str)
+                    
+                    sections = data.get('sections', [])
+
+                    for section in sections:
+                        sec_title = section.get('title', 'General')
+                        for para_text in section.get('paragraphs', []):
+                            supabase.table("paragraphs").insert({
+                                "chapter_id": chapter_id,
+                                "content": para_text,
+                                "section_title": sec_title,
+                                "order_index": global_order_index,
+                                "type": "text",
+                                "is_completed": False
+                            }).execute()
+                            global_order_index += 1
+                else:
+                    raise ValueError("No JSON found")
+                            
+            except Exception as parse_e:
+                print(f"⚠️ JSON Parse Error: {parse_e}")
+                print(f"⚠️ Raw Response start: {clean_content[:100]}...")
+                
+                # FALLBACK: Save the raw text so the user doesn't see nothing
+                supabase.table("paragraphs").insert({
+                    "chapter_id": chapter_id,
+                    "content": raw_chunk,
+                    "section_title": "General", # Fallback title
+                    "order_index": global_order_index,
+                    "type": "text",
+                    "is_completed": False
+                }).execute()
+                global_order_index += 1
+
+        print(f"✅ Granular processing complete for {chapter_id}")
 
     except Exception as e:
-        print(f"❌ Error generating chapter: {str(e)}")
-
+        print(f"❌ Critical Error: {str(e)}")
+        
+        
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

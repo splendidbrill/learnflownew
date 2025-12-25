@@ -7,6 +7,7 @@ import {
   CheckCircle, LogOut, Loader2, FileText, ChevronRight, AlertCircle
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+import { div } from 'framer-motion/client';
 
 // --- 1. TYPES ---
 interface Message {
@@ -27,10 +28,15 @@ interface Chapter {
   progress?: number;
 }
 
+
+
 interface Paragraph {
   id: string;
   content: string;
   is_completed: boolean;
+  section_title?: string; // <--- ADD THIS
+  order_index: number;
+  explanation?: string;   // Add this too if you want to cache explanations
 }
 
 interface Book {
@@ -50,6 +56,7 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [selectedChapter, setSelectedChapter] = useState<Chapter | null>(null);
   const [paragraphs, setParagraphs] = useState<Paragraph[]>([]);
+  const [activeParagraphId, setActiveParagraphId] = useState<string | null>(null);
   
   // UI State
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -93,6 +100,8 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
     setIsLoadingData(false);
   };
 
+  
+
   useEffect(() => {
     fetchBookData();
   }, [bookId]);
@@ -121,6 +130,53 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
     loadParagraphs();
   }, [selectedChapter]);
 
+  useEffect(() => {
+    setIsGenerating(false);
+  }, [selectedChapter]);
+
+  // 1. ADD: Load Chat History when Chapter changes
+  useEffect(() => {
+    const loadChatHistory = async () => {
+      if (!selectedChapter) return;
+      
+      const { data } = await supabase
+        .from('chat_logs')
+        .select('*')
+        .eq('chapter_id', selectedChapter.id)
+        .order('created_at', { ascending: true });
+        
+      if (data) {
+        // Map DB structure to UI structure
+        setMessages(data.map(m => ({ id: m.id, role: m.role as any, content: m.content })));
+      } else {
+        setMessages([]);
+      }
+    };
+    loadChatHistory();
+  }, [selectedChapter]);
+
+  // 2. ADD: Helper to Save Message to DB
+  const addMessageToDb = async (role: 'user' | 'assistant', content: string) => {
+    // Only save if we have a chapter and user
+    // (Assuming you have 'user' object from props, if not, get it from supabase.auth.getUser())
+    if (!selectedChapter) return;
+    
+    // Optimistic UI Update (Show it immediately)
+    const tempId = Date.now().toString();
+    setMessages(prev => [...prev, { id: tempId, role, content }]);
+
+    const { data, error } = await supabase.from('chat_logs').insert({
+      chapter_id: selectedChapter.id,
+      user_id: (await supabase.auth.getUser()).data.user?.id, 
+      role, 
+      content
+    }).select().single();
+    
+    // Update the temp ID with real DB ID (optional but good practice)
+    if (data) {
+      setMessages(prev => prev.map(m => m.id === tempId ? { ...m, id: data.id } : m));
+    }
+  };
 
   // --- 4. HANDLERS (LOGIC) ---
 
@@ -187,21 +243,46 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || !selectedChapter) return;
+    if (!input.trim()) return;
 
-    const userMessage: Message = { id: Date.now().toString(), role: 'user', content: input };
+    const userText = input.trim();
+    
+    // 1. Add User Message to Chat UI immediately
+    const userMessage: Message = { id: Date.now().toString(), role: 'user', content: userText };
     setMessages(prev => [...prev, userMessage]);
     setInput("");
+
+    // --- NEW LOGIC: Navigation Interceptor ---
+    // If the user says a "move on" keyword, handle it locally.
+    // We strip punctuation/spaces to match "yes." or "next!"
+    const cleanCommand = userText.toLowerCase().replace(/[^a-z]/g, '');
+    const navKeywords = ['yes', 'next', 'ok', 'okay', 'sure', 'continue', 'goahead', 'ready'];
+
+    // Only intercept if we have an active paragraph (meaning we are in a session)
+    if (activeParagraphId && navKeywords.includes(cleanCommand)) {
+       // Simulate a small delay for natural feel, then move
+       setTimeout(() => {
+         handleNextParagraph();
+       }, 500);
+       return; // <--- STOP HERE. Do not send to API.
+    }
+    // -----------------------------------------
+
+    if (!selectedChapter) return;
     setIsAiThinking(true);
 
     try {
-      const response = await fetch('/api/chat', {
+      const payload = {
+        messages: [...messages, userMessage],
+        chapterId: selectedChapter.id,
+        currentParagraphId: activeParagraphId, 
+        userResponse: userText 
+      };
+
+      const response = await fetch('http://localhost:8000/chat', { 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [...messages, userMessage],
-          chapterId: selectedChapter.id
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) throw new Error(response.statusText);
@@ -221,12 +302,39 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
         const chunkValue = decoder.decode(value, { stream: true });
         accumulatedText += chunkValue;
 
+        // Still keep this just in case the AI triggers it during a Q&A session
+        if (accumulatedText.toLowerCase().includes("[next]")) {
+           const cleanText = accumulatedText.replace(/\[next\]/gi, "").trim();
+           if (cleanText) {
+             setMessages(prev => prev.map(msg => 
+               msg.id === aiMessageId ? { ...msg, content: cleanText } : msg
+             ));
+           } else {
+             setMessages(prev => prev.filter(msg => msg.id !== aiMessageId));
+           }
+           handleNextParagraph(); 
+           return; 
+        }
+
         setMessages(prev => prev.map(msg => 
           msg.id === aiMessageId ? { ...msg, content: accumulatedText } : msg
         ));
       }
+      if (accumulatedText.trim()) {
+    // We already updated the UI state during streaming, 
+    // now just background save to DB
+    supabase.from('chat_logs').insert({
+      chapter_id: selectedChapter!.id,
+      user_id: (await supabase.auth.getUser()).data.user?.id,
+      role: 'assistant',
+      content: accumulatedText
+    });
+}
+      
     } catch (error: any) {
-      alert("Chat Error: " + error.message);
+      console.error(error);
+      // Fallback message in chat if error
+      setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: "I'm having trouble connecting. Try clicking 'Study Section' again." }]);
     } finally {
       setIsAiThinking(false);
     }
@@ -320,30 +428,286 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
     </div>
   );
 
-  const renderReader = () => (
-    <div className="flex flex-col h-full bg-[#0f0518] overflow-y-auto scrollbar-thin scrollbar-thumb-purple-900/50">
-      <div className="sticky top-0 bg-[#0f0518]/95 backdrop-blur z-10 border-b border-white/5 p-4 flex items-center gap-4">
-         <button onClick={() => setSelectedChapter(null)} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white">
-           <ArrowLeft className="w-5 h-5" />
-         </button>
-         <div>
-           <h2 className="text-white font-semibold">{selectedChapter?.title}</h2>
-           <p className="text-xs text-gray-400">
-             {selectedChapter?.start_page_num ? `Starts at Page ${selectedChapter.start_page_num}` : 'Reading Mode'}
-           </p>
-         </div>
-      </div>
+  const groupParagraphsBySection = (list: Paragraph[]) => {
+    const sections: { title: string; paragraphs: Paragraph[] }[] = [];
+    
+    list.forEach((p) => {
+      const lastSection = sections[sections.length - 1];
+      // Check if this paragraph belongs to the same section as the last one
+      // If section_title is missing, we group it under "General"
+      const currentTitle = p.section_title || 'General';
 
-      <div className="max-w-3xl mx-auto w-full p-8 space-y-8 pb-20">
-        {paragraphs.length > 0 ? (
-          paragraphs.map((para) => (
-            <div key={para.id} className="group relative p-6 rounded-2xl border bg-[#1e0a3c]/50 border-transparent hover:border-white/10 transition-all">
-              <div className="prose prose-invert max-w-none">
-                <p className="whitespace-pre-wrap leading-relaxed text-gray-200">{para.content}</p>
-              </div>
-            </div>
-          ))
-        ) : (
+      if (lastSection && lastSection.title === currentTitle) {
+        lastSection.paragraphs.push(p);
+      } else {
+        sections.push({ 
+          title: currentTitle, 
+          paragraphs: [p] 
+        });
+      }
+    });
+    
+    return sections;
+  };
+
+  // const startAiSession = (section: { title: string; paragraphs: Paragraph[] }) => {
+  //   // 1. Open the Chat Sidebar if it's not open (Optional, based on your UI preference)
+  //   // setIsSidebarOpen(true); 
+
+  //   // 2. Find the first paragraph that is NOT completed
+  //   const nextPara = section.paragraphs.find(p => !p.is_completed);
+
+  //   let initialMessage = "";
+    
+  //   if (!nextPara) {
+  //     // Case A: Section is 100% complete
+  //     initialMessage = `You have completed the section "**${section.title}**". Good job! Do you want to review specific concepts?`;
+  //     setActiveParagraphId(null);
+  //   } else {
+  //     // Case B: Section has remaining work
+  //     const isFirst = nextPara.id === section.paragraphs[0].id;
+  //     setActiveParagraphId(nextPara.id); // <--- Important: This sets the "Cursor"
+      
+  //     if (isFirst) {
+  //       initialMessage = `I see you are starting "**${section.title}**". It has ${section.paragraphs.length} paragraphs. Shall we start with the first one?`;
+  //     } else {
+  //       // Calculate how many they finished
+  //       const doneCount = section.paragraphs.indexOf(nextPara);
+  //       initialMessage = `Welcome back to "**${section.title}**". You've finished ${doneCount} paragraphs. Ready to tackle paragraph #${doneCount + 1}?`;
+  //     }
+  //   }
+
+  //   // 3. Inject the greeting into the Chat
+  //   setMessages(prev => [
+  //     ...prev, 
+  //     { 
+  //       id: Date.now().toString(), 
+  //       role: 'assistant', 
+  //       content: initialMessage 
+  //     }
+  //   ]);
+  // };
+
+  const startAiSession = (section: { title: string; paragraphs: Paragraph[] }) => {
+    // Find the first one that is NOT completed
+    const nextPara = section.paragraphs.find(p => !p.is_completed);
+    
+    if (!nextPara) {
+      setMessages(prev => [...prev, { id: Date.now().toString(), role: 'assistant', content: `You've already finished **${section.title}**. Do you have any specific questions about it?` }]);
+      setActiveParagraphId(null);
+    } else {
+      setActiveParagraphId(nextPara.id);
+      
+      const doneCount = section.paragraphs.indexOf(nextPara);
+      const total = section.paragraphs.length;
+      
+      // Clear previous chat or add a divider? Let's add a divider.
+      setMessages(prev => [...prev, { 
+        id: Date.now().toString(), 
+        role: 'assistant', // Use a special style for this if you want
+        content: `--- ${section.title} (${doneCount}/${total} done) ---` 
+      }]);
+
+      // AUTO-DRIVE: Explain immediately.
+      triggerExplanation(nextPara.id);
+    }
+  };
+
+  const triggerExplanation = async (paragraphId: string) => {
+    setIsAiThinking(true);
+    
+    // We send a hidden "System" instruction from the user's perspective
+    // This forces the AI to enter "Explanation Mode" for the new paragraph
+    const hiddenMessage: Message = { 
+      id: Date.now().toString(), 
+      role: 'user', 
+      content: "Explain this paragraph to me." 
+    };
+
+    try {
+      const response = await fetch('http://localhost:8000/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [hiddenMessage], // We start a fresh context for the new paragraph
+          chapterId: selectedChapter!.id,
+          currentParagraphId: paragraphId, // <--- Send the NEW ID explicitly
+          userResponse: "Explain"
+        }),
+      });
+
+      if (!response.body) return;
+
+      // Create a new Assistant Message bubble
+      const aiMessageId = (Date.now() + 1).toString();
+      setMessages(prev => [...prev, { id: aiMessageId, role: 'assistant', content: "" }]);
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let done = false;
+      let accumulatedText = "";
+
+      while (!done) {
+        const { value, done: doneReading } = await reader.read();
+        done = doneReading;
+        const chunkValue = decoder.decode(value, { stream: true });
+        accumulatedText += chunkValue;
+
+        if (accumulatedText.toLowerCase().includes("[next]")) {
+           // Skip moving forward here (prevents infinite loop), just hide the tag
+           // or if you want it to auto-skip empty explanations:
+           const cleanText = accumulatedText.replace(/\[next\]/gi, "").trim();
+           setMessages(prev => prev.map(msg => 
+             msg.id === aiMessageId ? { ...msg, content: cleanText } : msg
+           ));
+           return; 
+        }
+
+        setMessages(prev => prev.map(msg => 
+          msg.id === aiMessageId ? { ...msg, content: accumulatedText } : msg
+        ));
+      }
+      if (accumulatedText.trim()) {
+        // We already updated the UI state during streaming, 
+        // now just background save to DB
+        supabase.from('chat_logs').insert({
+          chapter_id: selectedChapter!.id,
+          user_id: (await supabase.auth.getUser()).data.user?.id,
+          role: 'assistant',
+          content: accumulatedText
+        });
+    }
+
+
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsAiThinking(false);
+    }
+  };
+
+  // const handleNextParagraph = () => {
+  //   if (!activeParagraphId) return;
+
+  //   // 1. Mark current as complete locally
+  //   setParagraphs(prev => prev.map(p => 
+  //     p.id === activeParagraphId ? { ...p, is_completed: true } : p
+  //   ));
+
+  //   // (Optional: Save to DB here via Supabase)
+  //   // supabase.table('user_progress').insert(...)
+
+  //   // 2. Find the NEXT paragraph in the same section
+  //   const flatList = paragraphs; 
+  //   const currentIndex = flatList.findIndex(p => p.id === activeParagraphId);
+  //   const nextPara = flatList[currentIndex + 1];
+
+  //   if (nextPara) {
+  //     // Move to next
+  //     setActiveParagraphId(nextPara.id);
+      
+  //     // 3. Trigger AI automatically for the new paragraph
+  //     // We simulate a user message "Explain" but hide it, or just send a hidden request
+  //     // For MVP, let's just let the user know:
+  //     setMessages(prev => [
+  //       ...prev,
+  //       { id: Date.now().toString(), role: 'assistant', content: "Moving to the next paragraph... Shall I explain it?" }
+  //     ]);
+  //   } else {
+  //     // Section done
+  //     setActiveParagraphId(null);
+  //     setMessages(prev => [
+  //       ...prev,
+  //       { id: Date.now().toString(), role: 'assistant', content: "🎉 Section completed! Great work." }
+  //     ]);
+  //   }
+  // };
+
+  // const handleNextParagraph = async () => { // Make async
+  //   if (!activeParagraphId) return;
+
+  //   // 1. SAVE TO DATABASE (The Fix for "Forgetting")
+  //   const { error } = await supabase
+  //     .from('paragraphs')
+  //     .update({ is_completed: true })
+  //     .eq('id', activeParagraphId);
+
+  //   if (error) console.error("Failed to save progress:", error);
+
+  //   // 2. Update Local State
+  //   setParagraphs(prev => prev.map(p => 
+  //     p.id === activeParagraphId ? { ...p, is_completed: true } : p
+  //   ));
+
+  //   // 3. Find Next Paragraph
+  //   const flatList = paragraphs; 
+  //   const currentIndex = flatList.findIndex(p => p.id === activeParagraphId);
+  //   const nextPara = flatList[currentIndex + 1];
+
+  //   if (nextPara) {
+  //     setActiveParagraphId(nextPara.id);
+  //     // 4. AUTO-DRIVE: Go straight to explanation, don't ask.
+  //     triggerExplanation(nextPara.id); 
+  //   } else {
+  //     setActiveParagraphId(null);
+  //     setMessages(prev => [
+  //       ...prev,
+  //       { id: Date.now().toString(), role: 'assistant', content: "🎉 Section completed! Great work." }
+  //     ]);
+  //   }
+  // };
+  const handleNextParagraph = async () => {
+    if (!activeParagraphId) return;
+
+    // 1. Save Progress
+    await supabase.from('paragraphs').update({ is_completed: true }).eq('id', activeParagraphId);
+
+    // 2. Update Local
+    setParagraphs(prev => prev.map(p => p.id === activeParagraphId ? { ...p, is_completed: true } : p));
+
+    // 3. Find Next
+    const currentIndex = paragraphs.findIndex(p => p.id === activeParagraphId);
+    const currentPara = paragraphs[currentIndex];
+    const nextPara = paragraphs[currentIndex + 1];
+
+    if (nextPara) {
+      setActiveParagraphId(nextPara.id);
+
+      // --- NEW SECTION DETECTION ---
+      const currentSectionTitle = currentPara.section_title || 'General';
+      const nextSectionTitle = nextPara.section_title || 'General';
+
+      if (currentSectionTitle !== nextSectionTitle) {
+         // Calculate stats for the NEW section
+         const newSectionParas = paragraphs.filter(p => (p.section_title || 'General') === nextSectionTitle);
+         const total = newSectionParas.length;
+         
+         // Insert Divider into Chat
+         addMessageToDb('assistant', `--- Starting: ${nextSectionTitle} (0/${total}) ---`);
+      }
+      // -----------------------------
+
+      triggerExplanation(nextPara.id); 
+    } else {
+      setActiveParagraphId(null);
+      addMessageToDb('assistant', "🎉 Chapter completed! Great work.");
+    }
+  };
+
+  const currentParaObj = paragraphs.find(p => p.id === activeParagraphId);
+const currentSectionTitle = currentParaObj?.section_title || 'General';
+const sectionParas = paragraphs.filter(p => (p.section_title || 'General') === currentSectionTitle);
+const completedInThisSection = sectionParas.filter(p => p.is_completed).length;
+
+  const renderReader = () => {
+    const groupedSections = groupParagraphsBySection(paragraphs);
+
+    return (
+      <div className="h-full w-full overflow-y-auto p-8 scrollbar-thin scrollbar-thumb-purple-500/20 scrollbar-track-transparent">
+      <div className="max-w-3xl mx-auto w-full p-8 space-y-12 pb-20">
+        
+        {/* --- EMPTY STATE WITH GENERATE BUTTON --- */}
+        {groupedSections.length === 0 && (
           <div className="text-center py-20">
             <div className="w-20 h-20 bg-purple-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
               <BookOpen className="w-10 h-10 text-purple-400" />
@@ -356,19 +720,76 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
             <button
               onClick={handleGenerateChapterContent}
               disabled={isGenerating}
-              className="px-8 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold shadow-lg shadow-purple-900/20 transition-all disabled:opacity-50"
+              className="px-8 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold shadow-lg shadow-purple-900/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2 mx-auto"
             >
               {isGenerating ? (
-                <span className="flex items-center gap-2"><Loader2 className="animate-spin" /> Writing...</span>
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Generating content...
+                </>
               ) : (
                 "✨ Generate Chapter Content"
               )}
             </button>
           </div>
         )}
+
+        {/* --- CONTENT SECTIONS --- */}
+        {groupedSections.map((section, secIdx) => {
+          const isSectionComplete = section.paragraphs.every(p => p.is_completed);
+
+          return (
+            <div 
+              key={secIdx} 
+              className={`relative group rounded-2xl p-6 transition-all border-2 ${
+                isSectionComplete 
+                  ? 'border-orange-500/50 bg-orange-500/5' 
+                  : 'border-transparent hover:border-white/10 hover:bg-[#1e0a3c]'
+              }`}
+            >
+              {/* Section Header */}
+              <h3 className="text-xl font-bold text-white mb-6 pl-2 border-l-4 border-purple-500">
+                {section.title}
+              </h3>
+
+              {/* Study Button (Visible on Hover) */}
+              <div className="absolute -right-4 top-6 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startAiSession(section);
+                  }}
+                  className="bg-gradient-to-r from-purple-600 to-cyan-500 text-white p-2 rounded-lg shadow-lg hover:scale-105 transition-transform flex items-center gap-2"
+                >
+                  <MessageSquare className="w-4 h-4" />
+                  <span className="text-xs font-bold whitespace-nowrap">Study Section</span>
+                </button>
+              </div>
+
+              {/* Paragraphs */}
+              <div className="space-y-4">
+                {section.paragraphs.map((para) => (
+                  <div 
+                  key={para.id} 
+                  className={`
+                    text-gray-300 leading-relaxed p-4 rounded-lg transition-all duration-500
+                    ${para.is_completed ? 'border-b-2 border-dotted border-orange-500 text-gray-500' : 'bg-white/5'}
+                    ${activeParagraphId === para.id 
+                       ? 'bg-purple-900/40 border-l-4 border-purple-400 ring-1 ring-purple-500/50 shadow-[0_0_15px_rgba(168,85,247,0.2)] transform scale-[1.02]' 
+                       : ''}
+                  `}
+                >
+                    {para.content}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
       </div>
-    </div>
-  );
+      </div>
+    );
+  };
 
   // --- 6. MAIN RENDER ---
   if (isLoadingData) return <div className="bg-[#13002b] h-screen text-white flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-purple-500"/></div>;
@@ -419,7 +840,7 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
       </div>
 
       {/* RIGHT SIDEBAR (CHAT) */}
-      <div className="w-[400px] flex-shrink-0 bg-[#0f0518] border-l border-white/5 flex flex-col">
+      {/* <div className="w-[400px] flex-shrink-0 bg-[#0f0518] border-l border-white/5 flex flex-col">
         <div className="p-4 border-b border-white/5 bg-[#1e0a3c]/30">
           <h2 className="text-white font-semibold flex items-center gap-2">
             <MessageSquare className="w-4 h-4 text-purple-400" />
@@ -465,6 +886,100 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
               onChange={(e) => setInput(e.target.value)}
               disabled={!selectedChapter || isAiThinking}
               placeholder={selectedChapter ? "Ask about this chapter..." : "Select a chapter first"}
+              className="w-full bg-[#1e0a3c] border border-white/10 text-white rounded-xl py-3 px-4 pr-12 focus:outline-none focus:border-purple-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            />
+            <button 
+              type="submit"
+              disabled={!selectedChapter || !input.trim() || isAiThinking}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-purple-600 rounded-lg text-white hover:bg-purple-500 transition-colors disabled:opacity-50"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </form>
+        </div>
+      </div> */}
+      {/* RIGHT SIDEBAR (CHAT) */}
+      <div className="w-[400px] flex-shrink-0 bg-[#0f0518] border-l border-white/5 flex flex-col">
+        
+        {/* 1. HEADER WITH PROGRESS */}
+        <div className="p-4 border-b border-white/5 bg-[#1e0a3c]/30 transition-all">
+          <h2 className="text-white font-semibold flex items-center gap-2">
+            <MessageSquare className="w-4 h-4 text-purple-400" />
+            AI Tutor
+            {!activeParagraphId && selectedChapter && (
+              <span className="text-xs font-normal text-gray-500 ml-2 truncate max-w-[150px]">
+                (Context: {selectedChapter.title})
+              </span>
+            )}
+          </h2>
+
+          {/* Dynamic Progress Bar */}
+          {activeParagraphId && (
+            <div className="mt-3 animate-in fade-in slide-in-from-top-2">
+              <div className="flex justify-between items-center text-xs mb-1">
+                <span className="text-purple-300 font-bold truncate max-w-[200px]">
+                  {currentSectionTitle}
+                </span>
+                <span className="text-gray-400">
+                  {completedInThisSection} / {sectionParas.length} done
+                </span>
+              </div>
+              
+              <div className="h-1.5 w-full bg-black/40 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-gradient-to-r from-purple-500 to-cyan-400 transition-all duration-500"
+                  style={{ width: `${(completedInThisSection / (sectionParas.length || 1)) * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* 2. CHAT MESSAGES AREA */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {messages.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center text-center opacity-50">
+               <MessageSquare className="w-8 h-8 mb-2" />
+               <p className="text-sm">Select a chapter and ask a question!</p>
+            </div>
+          ) : (
+            messages.map((m) => (
+              <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[85%] rounded-2xl p-3 text-sm ${
+                  m.role === 'user' 
+                  ? 'bg-purple-600 text-white rounded-br-none' 
+                  : m.role === 'assistant' 
+                    ? 'bg-[#1e0a3c] border border-white/10 text-gray-200 rounded-bl-none'
+                    : 'w-full text-center text-xs text-gray-500 my-2 border-b border-white/5 leading-[0.1em]' // System/Divider style
+                }`}>
+                  {m.role === 'assistant' ? (
+                     <span className="bg-[#0f0518] px-2">{m.content}</span>
+                  ) : (
+                     m.content
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+          {isAiThinking && (
+            <div className="flex justify-start">
+              <div className="bg-[#1e0a3c] border border-white/10 p-3 rounded-2xl rounded-bl-none">
+                <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
+              </div>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* 3. INPUT AREA */}
+        <div className="p-4 border-t border-white/5 bg-[#0a0212]">
+          <form onSubmit={handleSendMessage} className="relative">
+            <input 
+              type="text" 
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              disabled={!selectedChapter || isAiThinking}
+              placeholder={activeParagraphId ? "Ask a question or type 'Next'" : "Select a chapter first"}
               className="w-full bg-[#1e0a3c] border border-white/10 text-white rounded-xl py-3 px-4 pr-12 focus:outline-none focus:border-purple-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             />
             <button 
