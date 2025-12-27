@@ -34,6 +34,10 @@ load_dotenv(dotenv_path=env_path)
 
 app = FastAPI()
 
+@app.get("/")
+def health_check():
+    return {"status": "active", "message": "LearnFlow Backend is Online 🚀"}
+
 app.include_router(scheduler.router, prefix="/api")
 
 # 2. CORS
