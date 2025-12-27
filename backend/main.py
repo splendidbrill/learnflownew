@@ -23,11 +23,18 @@ from langchain_core.messages import HumanMessage, SystemMessage
 # NEW: Use Groq instead of Google
 from langchain_groq import ChatGroq 
 
+from db import supabase 
+
+# Import the new Router
+from routers import scheduler
+
 # 1. Load Env
 env_path = Path(__file__).parent / '.env'
 load_dotenv(dotenv_path=env_path)
 
 app = FastAPI()
+
+app.include_router(scheduler.router, prefix="/api")
 
 # 2. CORS
 app.add_middleware(
