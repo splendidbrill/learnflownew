@@ -10,6 +10,10 @@ import { createClient } from '@/lib/supabase/client';
 import { div } from 'framer-motion/client';
 
 // --- 1. TYPES ---
+
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
 interface Message {
   id: string;
   role: 'user' | 'assistant';
@@ -186,7 +190,7 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
     setBookStatus("processing");
 
     try {
-      const response = await fetch("http://localhost:8000/ingest", {
+      const response = await fetch(`${API_URL}/ingest`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -212,7 +216,7 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
     setIsGenerating(true); 
     
     try {
-      const res = await fetch("http://localhost:8000/generate_chapter", {
+      const res = await fetch(`${API_URL}/generate_chapter`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chapterId: selectedChapter.id }),
@@ -279,7 +283,7 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
         userResponse: userText 
       };
 
-      const response = await fetch('http://localhost:8000/chat', { 
+      const response = await fetch(`${API_URL}/chat`, { 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -525,7 +529,7 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
     };
 
     try {
-      const response = await fetch('http://localhost:8000/chat', {
+      const response = await fetch(`${API_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
