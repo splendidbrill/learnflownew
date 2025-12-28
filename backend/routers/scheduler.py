@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from qstash import QStash
 from datetime import datetime, timedelta
+import pytz
 from db import supabase  # Import from your new shared db file
 from dotenv import load_dotenv 
 
@@ -34,7 +35,8 @@ class CreateScheduleRequest(BaseModel):
     chatId: str
     hour: int
     minute: int
-    timezoneOffset: int = 0
+    timezone: str # CHANGED: Now accepts "Asia/Kolkata"
+    channels: list[str] # CHANGED: ["email", "telegram"]
 
 class CronPayload(BaseModel):
     type: str
@@ -59,10 +61,31 @@ async def send_telegram_message(chat_id: str, text: str, buttons: list = None):
 
 # --- ROUTES ---
 
+@router.get("/user/telegram-status/{user_id}")
+async def check_telegram_status(user_id: str):
+    # Check if profile has a chat_id
+    res = supabase.table("profiles").select("telegram_chat_id").eq("id", user_id).single().execute()
+    
+    is_connected = False
+    if res.data and res.data.get("telegram_chat_id"):
+        is_connected = True
+        
+    return {"connected": is_connected}
+
 @router.post("/schedule/create")
 async def create_schedule(req: CreateScheduleRequest):
     if not qstash_client:
         raise HTTPException(status_code=500, detail="QStash not configured")
+    
+    target_chat_id = req.chatId
+    
+    # If frontend sent placeholder, lookup in DB
+    if req.chatId == "TEMP_CHAT_ID" or not req.chatId:
+        profile = supabase.table("profiles").select("telegram_chat_id").eq("id", req.userId).single().execute()
+        if profile.data and profile.data.get("telegram_chat_id"):
+            target_chat_id = profile.data["telegram_chat_id"]
+        else:
+            raise HTTPException(status_code=400, detail="Telegram not connected. Please connect first.")
 
     # 1. Calculate Timings (Simplified for MVP - Assuming UTC input)
     # Schedule 30 mins before
@@ -157,12 +180,17 @@ async def handle_notification(payload: CronPayload):
     return {"status": "sent"}
 
 
+
+
 @router.post("/hooks/telegram")
 async def telegram_webhook(update: dict):
     """
-    Handle button clicks from Telegram.
-    Updates the 'study_sessions' table to track attendance.
+    Handle Telegram updates:
+    1. Callback Queries (Button clicks for attendance)
+    2. Messages (/start command for account linking)
     """
+    
+    # CASE 1: Button Clicks (Attendance/Skip)
     if "callback_query" in update:
         query = update["callback_query"]
         raw_data = query["data"] # e.g. "CONFIRM:123-abc-456"
@@ -188,6 +216,33 @@ async def telegram_webhook(update: dict):
 
         # Send response
         await send_telegram_message(chat_id, message_text)
+
+    # CASE 2: Text Messages (Account Linking)
+    elif "message" in update:
+        msg = update["message"]
+        chat_id = msg.get("chat", {}).get("id")
+        text = msg.get("text", "")
+
+        # Logic: User clicked t.me/MyBot?start=USER_UUID
+        if text and text.startswith("/start"):
+            parts = text.split(" ")
+            if len(parts) > 1:
+                user_uuid = parts[1]
+                print(f"🔗 Linking User {user_uuid} to Chat ID {chat_id}")
+                
+                try:
+                    # Save Chat ID to User Profile
+                    # This allows us to look it up later when they create a schedule
+                    supabase.table("profiles").update({
+                        "telegram_chat_id": str(chat_id)
+                    }).eq("id", user_uuid).execute()
+                    
+                    await send_telegram_message(chat_id, "✅ **Connected!**\nYou can now return to the app and set your study schedule.")
+                except Exception as e:
+                    print(f"Error linking telegram: {e}")
+                    await send_telegram_message(chat_id, "❌ Error connecting account. Please try again.")
+            else:
+                 await send_telegram_message(chat_id, "👋 Welcome! Please click the 'Connect Telegram' button inside the LearnFlow app to get started.")
 
     return {"status": "ok"}
 

@@ -8,6 +8,8 @@ import {
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { div } from 'framer-motion/client';
+import { ScheduleModal } from '../../components/ScheduleModal';
+import { Clock } from 'lucide-react';
 
 // --- 1. TYPES ---
 
@@ -73,7 +75,15 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
   const [input, setInput] = useState("");
   const [isAiThinking, setIsAiThinking] = useState(false);
 
+  const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+  const [scheduleMode, setScheduleMode] = useState<'create' | 'edit'>('create');
+  const [user, setUser] = useState<any>(null);
+
   // --- 3. DATA FETCHING ---
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setUser(data.user));
+  }, []);
   
   const fetchBookData = async () => {
     if (!bookId) return;
@@ -158,6 +168,8 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
     };
     loadChatHistory();
   }, [selectedChapter]);
+
+ 
 
   // 2. ADD: Helper to Save Message to DB
   const addMessageToDb = async (role: 'user' | 'assistant', content: string) => {
@@ -344,10 +356,65 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
     }
   };
 
+  const handleGenerateClick = () => {
+    setScheduleMode('create');
+    setIsScheduleModalOpen(true);
+  };
+
+  const handleScheduleSave = async (time: string, method: string) => {
+    setIsScheduleModalOpen(false);
+    
+    // Call Scheduler API
+    const [hour, minute] = time.split(':').map(Number);
+    try {
+      await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/schedule/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+           userId: user?.id,
+           bookId: bookId,
+           chatId: "TEMP_CHAT_ID", // Backend looks this up
+           hour,
+           minute,
+           timezoneOffset: new Date().getTimezoneOffset() / -60
+        })
+      });
+      alert("Schedule Saved!");
+    } catch (e) {
+      console.error(e);
+    }
+
+    // If we are creating, NOW we start the actual book generation
+    if (scheduleMode === 'create') {
+        handleGenerateMap(); // <--- This calls your existing map generation function
+    }
+  };
+
+  const handleSkipSchedule = () => {
+    setIsScheduleModalOpen(false);
+    handleGenerateMap(); // <--- Skip straight to generation
+  };
+
   // --- 5. RENDER HELPERS ---
 
   const renderDashboard = () => (
-    <div className="h-full w-full overflow-y-auto p-10 animate-in fade-in duration-500 scrollbar-thin scrollbar-thumb-purple-900/50">
+    <div className="h-full w-full overflow-y-auto p-10 animate-in fade-in duration-500 scrollbar-thin scrollbar-thumb-purple-900/50 relative">
+      {/* --- PASTE THE EDIT BUTTON HERE --- */}
+      {bookStatus !== 'pending' && (
+        <button 
+          onClick={() => {
+            setScheduleMode('edit');
+            setIsScheduleModalOpen(true);
+          }}
+          className="absolute top-6 left-6 p-2 rounded-xl border border-blue-500/30 text-blue-400 hover:bg-blue-500/10 hover:text-blue-300 transition-all group z-50"
+          title="Edit Study Schedule"
+        >
+          <Clock className="w-5 h-5 group-hover:scale-110 transition-transform" />
+          {/* Optional: Add a "Active" dot logic here later */}
+          <span className="absolute top-0 right-0 w-2 h-2 bg-green-500 rounded-full"></span>
+        </button>
+      )}
+
       <div className="max-w-5xl mx-auto pb-20">
         <div className="text-center mb-12">
           <div className="w-16 h-16 bg-purple-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4 text-purple-400 shadow-lg shadow-purple-900/20">
@@ -996,7 +1063,17 @@ const completedInThisSection = sectionParas.filter(p => p.is_completed).length;
           </form>
         </div>
       </div>
-
+      {user && (
+        <ScheduleModal 
+          isOpen={isScheduleModalOpen}
+          onClose={() => setIsScheduleModalOpen(false)}
+          onSave={handleScheduleSave}
+          onSkip={handleSkipSchedule}
+          mode={scheduleMode}
+          userId={user.id}
+          botName="LearnFlow_Bot" // Change this to your actual Telegram Bot Username
+        />
+      )}
     </div>
   );
 };
