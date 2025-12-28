@@ -35,14 +35,15 @@ class CreateScheduleRequest(BaseModel):
     chatId: str
     hour: int
     minute: int
-    timezone: str # CHANGED: Now accepts "Asia/Kolkata"
-    channels: list[str] # CHANGED: ["email", "telegram"]
+    timezone: str        # <--- NEW: e.g. "Asia/Kolkata"
+    channels: list[str]  # <--- NEW: ["telegram", "email"]
 
 class CronPayload(BaseModel):
-    type: str
+    type: str            # '30min' or '5min'
     userId: str
     bookId: str
     chatId: str
+    channels: list[str]  # <--- NEW
 
 # --- HELPER FUNCTIONS ---
 async def send_telegram_message(chat_id: str, text: str, buttons: list = None):
@@ -72,51 +73,126 @@ async def check_telegram_status(user_id: str):
         
     return {"connected": is_connected}
 
+# @router.post("/schedule/create")
+# async def create_schedule(req: CreateScheduleRequest):
+#     if not qstash_client:
+#         raise HTTPException(status_code=500, detail="QStash not configured")
+    
+#     target_chat_id = req.chatId
+    
+#     # If frontend sent placeholder, lookup in DB
+#     if req.chatId == "TEMP_CHAT_ID" or not req.chatId:
+#         profile = supabase.table("profiles").select("telegram_chat_id").eq("id", req.userId).single().execute()
+#         if profile.data and profile.data.get("telegram_chat_id"):
+#             target_chat_id = profile.data["telegram_chat_id"]
+#         else:
+#             raise HTTPException(status_code=400, detail="Telegram not connected. Please connect first.")
+
+#     # 1. Calculate Timings (Simplified for MVP - Assuming UTC input)
+#     # Schedule 30 mins before
+#     dt = datetime(2024, 1, 1, req.hour, req.minute) - timedelta(minutes=30)
+#     cron_30 = f"{dt.minute} {dt.hour} * * *"
+    
+#     # Schedule 5 mins before
+#     dt_5 = datetime(2024, 1, 1, req.hour, req.minute) - timedelta(minutes=5)
+#     cron_5 = f"{dt_5.minute} {dt_5.hour} * * *"
+
+#     print(f"📅 Scheduling for User {req.userId}: {cron_30} and {cron_5}")
+
+#     try:
+#         # 2. Register with Upstash
+#         res_30 = qstash_client.schedule.create(
+#             cron=cron_30,
+#             destination=f"{APP_URL}/api/cron/trigger",
+#             body={"type": "30min", "userId": req.userId, "bookId": req.bookId, "chatId": req.chatId},
+#         )
+        
+#         res_5 = qstash_client.schedule.create(
+#             cron=cron_5,
+#             destination=f"{APP_URL}/api/cron/trigger",
+#             body={"type": "5min", "userId": req.userId, "bookId": req.bookId, "chatId": req.chatId},
+#         )
+
+#         # 3. Save to Supabase
+#         supabase.table("study_schedules").insert({
+#             "user_id": req.userId,
+#             "book_id": req.bookId,
+#             "telegram_chat_id": req.chatId,
+#             "qstash_schedule_id_30": res_30.schedule_id,
+#             "qstash_schedule_id_5": res_5.schedule_id
+#         }).execute()
+
+#         return {"status": "scheduled", "ids": [res_30.schedule_id, res_5.schedule_id]}
+    
+#     except Exception as e:
+#         print(f"Error scheduling: {e}")
+#         raise HTTPException(status_code=500, detail=str(e))
 @router.post("/schedule/create")
 async def create_schedule(req: CreateScheduleRequest):
     if not qstash_client:
         raise HTTPException(status_code=500, detail="QStash not configured")
-    
-    target_chat_id = req.chatId
-    
-    # If frontend sent placeholder, lookup in DB
-    if req.chatId == "TEMP_CHAT_ID" or not req.chatId:
-        profile = supabase.table("profiles").select("telegram_chat_id").eq("id", req.userId).single().execute()
-        if profile.data and profile.data.get("telegram_chat_id"):
-            target_chat_id = profile.data["telegram_chat_id"]
-        else:
-            raise HTTPException(status_code=400, detail="Telegram not connected. Please connect first.")
 
-    # 1. Calculate Timings (Simplified for MVP - Assuming UTC input)
+    # 1. Convert User's Local Time to UTC
+    try:
+        local_tz = pytz.timezone(req.timezone)
+        
+        # Create a "today" object at the user's preferred time
+        now = datetime.now()
+        local_dt = local_tz.localize(datetime(now.year, now.month, now.day, req.hour, req.minute))
+        
+        # Convert to UTC
+        utc_dt = local_dt.astimezone(pytz.utc)
+        
+        print(f"🕒 User Time: {req.hour}:{req.minute} {req.timezone} -> UTC: {utc_dt.hour}:{utc_dt.minute}")
+    except Exception as e:
+        print(f"Timezone error: {e}")
+        # Fallback to raw input if timezone fails
+        utc_dt = datetime(now.year, now.month, now.day, req.hour, req.minute)
+
+    # 2. Calculate Triggers (based on UTC time)
     # Schedule 30 mins before
-    dt = datetime(2024, 1, 1, req.hour, req.minute) - timedelta(minutes=30)
-    cron_30 = f"{dt.minute} {dt.hour} * * *"
+    dt_30 = utc_dt - timedelta(minutes=30)
+    cron_30 = f"{dt_30.minute} {dt_30.hour} * * *"
     
     # Schedule 5 mins before
-    dt_5 = datetime(2024, 1, 1, req.hour, req.minute) - timedelta(minutes=5)
+    dt_5 = utc_dt - timedelta(minutes=5)
     cron_5 = f"{dt_5.minute} {dt_5.hour} * * *"
 
-    print(f"📅 Scheduling for User {req.userId}: {cron_30} and {cron_5}")
+    print(f"📅 Scheduling for User {req.userId}: 30m({cron_30}) 5m({cron_5})")
 
     try:
-        # 2. Register with Upstash
+        # 3. Register with Upstash
+        # We pass the 'channels' list into the body so the trigger knows who to message
         res_30 = qstash_client.schedule.create(
             cron=cron_30,
-            destination=f"{APP_URL}/api/cron/trigger",
-            body={"type": "30min", "userId": req.userId, "bookId": req.bookId, "chatId": req.chatId},
+            destination=f"{os.getenv('APP_URL')}/api/cron/trigger",
+            body={
+                "type": "30min", 
+                "userId": req.userId, 
+                "bookId": req.bookId, 
+                "chatId": req.chatId,
+                "channels": req.channels
+            },
         )
         
         res_5 = qstash_client.schedule.create(
             cron=cron_5,
-            destination=f"{APP_URL}/api/cron/trigger",
-            body={"type": "5min", "userId": req.userId, "bookId": req.bookId, "chatId": req.chatId},
+            destination=f"{os.getenv('APP_URL')}/api/cron/trigger",
+            body={
+                "type": "5min", 
+                "userId": req.userId, 
+                "bookId": req.bookId, 
+                "chatId": req.chatId,
+                "channels": req.channels
+            },
         )
 
-        # 3. Save to Supabase
+        # 4. Save to Supabase
         supabase.table("study_schedules").insert({
             "user_id": req.userId,
             "book_id": req.bookId,
             "telegram_chat_id": req.chatId,
+            "cron_schedule": f"{req.hour}:{req.minute} {req.timezone}",
             "qstash_schedule_id_30": res_30.schedule_id,
             "qstash_schedule_id_5": res_5.schedule_id
         }).execute()
@@ -127,17 +203,14 @@ async def create_schedule(req: CreateScheduleRequest):
         print(f"Error scheduling: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ... imports and setup above remain the same ...
 
 @router.post("/cron/trigger")
 async def handle_notification(payload: CronPayload):
     print(f"🔔 Trigger received: {payload.type}")
 
-    # 1. Log the Session in DB (Status: Pending)
-    # We log it when the 5min warning fires, as that's the "real" session start trigger
+    # A. Log Session (Only on 5min mark)
     session_id = None
-    
     if payload.type == "5min":
         try:
             session_data = supabase.table("study_sessions").insert({
@@ -147,35 +220,33 @@ async def handle_notification(payload: CronPayload):
                 "notification_type": "5min"
             }).execute()
             
-            # Save ID to pass it into the Telegram Button (callback_data)
             if session_data.data:
                 session_id = session_data.data[0]['id']
-                
         except Exception as e:
             print(f"⚠️ Failed to log session: {e}")
 
-    # 2. Send Message
-    if payload.type == "30min":
-        # TODO: Fetch actual learning progress here for the summary
-        teaser = "📚 **Study Session Ahead!**\n\nWe prepared a summary of your last session. Get ready!"
-        # We don't track buttons for 30min summary, just a nudge
-        await send_telegram_message(payload.chatId, teaser, buttons=None)
+    # B. Send to TELEGRAM (if selected)
+    if "telegram" in payload.channels:
+        if payload.type == "30min":
+            teaser = "📚 **Study Session Ahead!**\n\nWe prepared a summary of your last session. Get ready!"
+            await send_telegram_message(payload.chatId, teaser, buttons=None)
 
-    elif payload.type == "5min":
-        # We attach the SESSION ID to the button data so we know WHICH session to confirm
-        # Format: "CONFIRM:<session_id>"
-        confirm_data = f"CONFIRM:{session_id}" if session_id else "CONFIRM"
-        skip_data = f"SKIP:{session_id}" if session_id else "SKIP"
-        
-        await send_telegram_message(
-            payload.chatId, 
-            "⚠️ **5 Minutes Left!**\nClass is starting. Are you joining?", 
-            # We pass tuples: (Button Text, Callback Data)
-            buttons=[
-                ("I'm Ready", confirm_data),
-                ("Skip Today", skip_data)
-            ]
-        )
+        elif payload.type == "5min":
+            # Attach Session ID to buttons
+            confirm_data = f"CONFIRM:{session_id}" if session_id else "CONFIRM"
+            skip_data = f"SKIP:{session_id}" if session_id else "SKIP"
+            
+            await send_telegram_message(
+                payload.chatId, 
+                "⚠️ **5 Minutes Left!**\nClass is starting. Are you joining?", 
+                buttons=[("I'm Ready", confirm_data), ("Skip Today", skip_data)]
+            )
+
+    # C. Send to EMAIL (if selected)
+    if "email" in payload.channels:
+        # Placeholder for Email Logic (e.g. Resend, SES)
+        print(f"📧 [MOCK EMAIL] To User {payload.userId}: Study session starts in {payload.type}")
+        # await send_email_logic(...)
 
     return {"status": "sent"}
 

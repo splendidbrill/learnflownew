@@ -361,35 +361,39 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
     setIsScheduleModalOpen(true);
   };
 
-  const handleScheduleSave = async (time: string, method: string) => {
-    setIsScheduleModalOpen(false);
-    
-    // Call Scheduler API
-    const [hour, minute] = time.split(':').map(Number);
-    try {
-      await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/schedule/create`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-           userId: user?.id,
-           bookId: bookId,
-           chatId: "TEMP_CHAT_ID", // Backend looks this up
-           hour,
-           minute,
-           timezoneOffset: new Date().getTimezoneOffset() / -60
-        })
-      });
-      alert("Schedule Saved!");
-    } catch (e) {
-      console.error(e);
-    }
+// [UPDATED FUNCTION] - Matches the new ScheduleModal signature
+const handleScheduleSave = async (time: string, channels: string[], timezone: string) => {
+  setIsScheduleModalOpen(false);
+  
+  // 1. Parse Time
+  const [hour, minute] = time.split(':').map(Number);
+  
+  // 2. Send to Backend
+  try {
+    await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/schedule/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+         userId: user?.id,
+         bookId: bookId,
+         chatId: "TEMP_CHAT_ID", // Backend will resolve this from profile
+         hour,
+         minute,
+         timezone: timezone,     // <--- Now sending the real timezone (e.g. "Asia/Kolkata")
+         channels: channels      // <--- Now sending the list (e.g. ["telegram"])
+      })
+    });
+    // Optional: alert("Schedule Saved!");
+  } catch (e) {
+    console.error(e);
+    alert("Failed to save schedule.");
+  }
 
-    // If we are creating, NOW we start the actual book generation
-    if (scheduleMode === 'create') {
-        handleGenerateMap(); // <--- This calls your existing map generation function
-    }
-  };
-
+  // 3. Start Ingestion (only if creating new)
+  if (scheduleMode === 'create') {
+      handleGenerateMap(); 
+  }
+};
   const handleSkipSchedule = () => {
     setIsScheduleModalOpen(false);
     handleGenerateMap(); // <--- Skip straight to generation
