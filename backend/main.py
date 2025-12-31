@@ -5,6 +5,7 @@ import time
 import re
 import json
 import ast
+import httpx # <--- Make sure this is imported
 from pathlib import Path
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -60,6 +61,33 @@ if not groq_key:
     raise ValueError("CRITICAL: GROQ_API_KEY missing.")
 
 supabase: Client = create_client(url, key)
+
+@app.on_event("startup")
+async def set_telegram_webhook():
+    """
+    Automatically tells Telegram where to send messages when the server starts.
+    """
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    app_url = os.getenv("APP_URL") # This is your Render URL
+
+    if not bot_token or not app_url:
+        print("⚠️ Skipping Telegram Webhook setup: Missing secrets.")
+        return
+
+    webhook_url = f"{app_url}/api/hooks/telegram"
+    telegram_api = f"https://api.telegram.org/bot{bot_token}/setWebhook"
+
+    print(f"⚙️ Setting Telegram Webhook to: {webhook_url}")
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(telegram_api, params={"url": webhook_url})
+            if response.status_code == 200:
+                print("✅ Telegram Webhook set successfully!")
+            else:
+                print(f"❌ Failed to set webhook: {response.text}")
+        except Exception as e:
+            print(f"❌ Error setting webhook: {e}")
 
 # 4. Setup AI (GROQ - Llama 3 8B)
 # This model is Free, Fast, and Good at JSON.
