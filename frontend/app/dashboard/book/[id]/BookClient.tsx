@@ -457,7 +457,7 @@ const handleScheduleSave = async (time: string, channels: string[], timezone: st
               Click below to generate a clickable course map.
             </p>
             <button 
-              onClick={handleGenerateMap}
+              onClick={handleGenerateClick}
               disabled={isGenerating}
               className="group relative inline-flex items-center justify-center px-8 py-4 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold text-lg transition-all shadow-xl hover:shadow-purple-500/30 hover:-translate-y-1 disabled:opacity-50"
             >
@@ -1075,7 +1075,7 @@ const completedInThisSection = sectionParas.filter(p => p.is_completed).length;
           onSkip={handleSkipSchedule}
           mode={scheduleMode}
           userId={user.id}
-          botName="LearnFlow_Bot" // Change this to your actual Telegram Bot Username
+          botName="learnainew_bot" // Change this to your actual Telegram Bot Username
         />
       )}
     </div>
