@@ -12,4 +12,6 @@ langchain
 langchain-community
 langchain-core
 langchain-groq
+
+pytz
 qstash
