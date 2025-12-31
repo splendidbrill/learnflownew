@@ -58,7 +58,11 @@ async def send_telegram_message(chat_id: str, text: str, buttons: list = None):
         payload["reply_markup"] = {"inline_keyboard": keyboard}
 
     async with httpx.AsyncClient() as client:
-        await client.post(url, json=payload)
+        resp = await client.post(url, json=payload)
+        if resp.status_code != 200:
+            print(f"❌ Telegram Reply Failed: {resp.text}")
+        else:
+            print(f"✅ Telegram Reply Sent to {chat_id}")
 
 # --- ROUTES ---
 
@@ -253,93 +257,58 @@ async def handle_notification(payload: CronPayload):
 
 
 
+# routers/scheduler.py
+
 @router.post("/hooks/telegram")
 async def telegram_webhook(update: dict):
-    """
-    Handle Telegram updates:
-    1. Callback Queries (Button clicks for attendance)
-    2. Messages (/start command for account linking)
-    """
+    print(f"📩 WEBHOOK RECEIVED: {update}") # 1. Prove we got it
     
-    # CASE 1: Button Clicks (Attendance/Skip)
-    if "callback_query" in update:
-        query = update["callback_query"]
-        raw_data = query["data"] # e.g. "CONFIRM:123-abc-456"
-        chat_id = query["message"]["chat"]["id"]
-        
-        # Parse Action and Session ID
-        if ":" in raw_data:
-            action, session_id = raw_data.split(":", 1)
-        else:
-            action, session_id = raw_data, None
+    try:
+        if "message" in update:
+            msg = update["message"]
+            chat_id = msg.get("chat", {}).get("id")
+            text = msg.get("text", "")
 
-        message_text = ""
+            print(f"👤 Processing message from {chat_id}: {text}") # 2. Prove we parsed it
 
-        if action == "CONFIRM":
-            message_text = f"🔥 **Session Confirmed!**\nLet's go: {APP_URL}/dashboard"
-            if session_id:
-                supabase.table("study_sessions").update({"status": "confirmed"}).eq("id", session_id).execute()
-                
-        elif action == "SKIP":
-            message_text = "No problem. Rest well! 💤"
-            if session_id:
-                supabase.table("study_sessions").update({"status": "skipped"}).eq("id", session_id).execute()
-
-        # Send response
-        await send_telegram_message(chat_id, message_text)
-
-    # CASE 2: Text Messages (Account Linking)
-    elif "message" in update:
-        msg = update["message"]
-        chat_id = msg.get("chat", {}).get("id")
-        text = msg.get("text", "")
-
-        # Logic: User clicked t.me/MyBot?start=USER_UUID
-        if text and text.startswith("/start"):
-            parts = text.split(" ")
-            if len(parts) > 1:
-                user_uuid = parts[1]
-                print(f"🔗 Linking User {user_uuid} to Chat ID {chat_id}")
-                
-                try:
-                    # Save Chat ID to User Profile
-                    # This allows us to look it up later when they create a schedule
-                    supabase.table("profiles").update({
-                        "telegram_chat_id": str(chat_id)
-                    }).eq("id", user_uuid).execute()
+            if text.startswith("/start"):
+                parts = text.split(" ")
+                if len(parts) > 1:
+                    user_uuid = parts[1]
+                    print(f"🔗 Attempting to link UUID: {user_uuid}")
                     
-                    await send_telegram_message(chat_id, "✅ **Connected!**\nYou can now return to the app and set your study schedule.")
-                except Exception as e:
-                    print(f"Error linking telegram: {e}")
-                    await send_telegram_message(chat_id, "❌ Error connecting account. Please try again.")
-            else:
-                 await send_telegram_message(chat_id, "👋 Welcome! Please click the 'Connect Telegram' button inside the LearnFlow app to get started.")
+                    try:
+                        # Database Link
+                        supabase.table("profiles").update({
+                            "telegram_chat_id": str(chat_id)
+                        }).eq("id", user_uuid).execute()
+                        print("✅ Database updated successfully")
+                        
+                        await send_telegram_message(chat_id, "✅ **Connected!**\nReturn to the app.")
+                    except Exception as db_e:
+                        print(f"❌ DATABASE ERROR: {db_e}")
+                        await send_telegram_message(chat_id, "❌ Database Error. Check server logs.")
+                else:
+                    print("👋 Regular start command received")
+                    await send_telegram_message(chat_id, "Welcome! Please use the 'Connect' button in the app.")
 
+    except Exception as e:
+        print(f"🔥 CRITICAL CRASH: {e}")
+        
     return {"status": "ok"}
 
-# --- Update the helper function to support custom callback data ---
+# Updated Helper with Error Printing
 async def send_telegram_message(chat_id: str, text: str, buttons: list = None):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    
     if buttons:
-        # buttons is now a list of tuples: [("Text", "Data")]
-        # If it's just a string list, handle that too for backward compatibility
-        keyboard = []
-        row = []
-        for btn in buttons:
-            if isinstance(btn, tuple):
-                label, data = btn
-            else:
-                label, data = btn, btn.upper()
-            
-            row.append({"text": label, "callback_data": data})
-        
-        keyboard.append(row)
-        payload["reply_markup"] = {"inline_keyboard": keyboard}
+        # ... button logic ...
+        pass
 
     async with httpx.AsyncClient() as client:
-        await client.post(url, json=payload)
+        resp = await client.post(url, json=payload)
+        if resp.status_code != 200:
+            print(f"❌ TELEGRAM API ERROR: {resp.status_code} - {resp.text}") # <--- THIS IS THE KEY
+        else:
+            print(f"✅ Message sent to {chat_id}")
