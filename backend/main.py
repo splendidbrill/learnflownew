@@ -71,25 +71,32 @@ class ImageAnalysisRequest(BaseModel):
     imageUrl: str
     analogyTopic: str
 
+
 @app.post("/api/analyze-image")
 async def analyze_image_endpoint(req: ImageAnalysisRequest):
     print(f"👁️ Analyzing Image for Para: {req.paragraphId}")
 
-    # 1. Check if we already have an explanation (Cache)
+    # 1. Check Cache
     existing = supabase.table("paragraphs").select("explanation").eq("id", req.paragraphId).single().execute()
     if existing.data and existing.data.get("explanation"):
         return {"explanation": existing.data["explanation"]}
 
-    # 2. Call Llama 3.2 Vision (via Groq)
-    # Note: Llama 3.2 Vision supports image URLs directly
+    # 2. Setup SPECIFIC Vision Model (Llama 3.2 90B Vision)
+    # We create this client ONLY when needed
+    vision_llm = ChatGroq(
+        model="llama-3.2-90b-vision-preview", # <--- The dedicated Vision model
+        api_key=groq_key,
+        temperature=0.2
+    )
+
     prompt = f"""
     You are a Physics Tutor. 
-    Analyze this image and explain the concept using a '{req.analogyTopic}' analogy.
-    Keep it short and clear.
+    Analyze this image. Explain the scientific concept visible here using a '{req.analogyTopic}' analogy.
+    Keep it short, clear, and fun.
     """
     
     try:
-        # Construct the message for Groq Vision
+        # Construct Message for Vision
         msg = [
             {
                 "role": "user",
@@ -105,13 +112,11 @@ async def analyze_image_endpoint(req: ImageAnalysisRequest):
             }
         ]
         
-        # We need a vision-capable client definition here
-        # Assuming 'llm' is ChatGroq, we might need to invoke it differently or use the Groq client directly for vision 
-        # For simplicity with LangChain ChatGroq (if it supports vision):
-        response = llm.invoke(msg) 
+        # 3. Call the Vision Model
+        response = vision_llm.invoke(msg)
         explanation = response.content
 
-        # 3. Save to DB
+        # 4. Save to DB
         supabase.table("paragraphs").update({
             "explanation": explanation
         }).eq("id", req.paragraphId).execute()
@@ -120,7 +125,8 @@ async def analyze_image_endpoint(req: ImageAnalysisRequest):
 
     except Exception as e:
         print(f"Vision Error: {e}")
-        return {"explanation": "I couldn't analyze this image right now. Try again later."}
+        # Detailed error for debugging
+        return {"explanation": f"I couldn't see the diagram clearly. (Error: {str(e)})"}
 
 @app.on_event("startup")
 async def set_telegram_webhook():
