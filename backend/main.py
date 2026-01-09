@@ -295,6 +295,7 @@ class GenerateChapterRequest(BaseModel):
 # --- NEW: CHAT ENDPOINT MODELS & LOGIC ---
 @app.post("/generate_chapter")
 async def generate_chapter(req: GenerateChapterRequest, background_tasks: BackgroundTasks):
+    print(f"👉 Endpoint hit! Requesting generation for: {req.chapterId}")
     # This calls the function we just updated
     background_tasks.add_task(process_chapter_content, req.chapterId)
     return {"status": "started", "message": "Generating chapter content..."}
@@ -520,101 +521,80 @@ async def chat_endpoint(req: ChatRequest):
 async def process_chapter_content(chapter_id: str):
     print(f"⚡ Processing Chapter: {chapter_id}")
     
-    # 1. Fetch DB Info (Same as before)
-    chapter = supabase.table("chapters").select("*").eq("id", chapter_id).single().execute()
-    book_id = chapter.data['book_id']
-    start_page = chapter.data['start_page_num']
-    
-    # Get file URL
-    book = supabase.table("course_books").select("file_url").eq("id", book_id).single().execute()
-    file_url = book.data['file_url']
-
-    # Get End Page
-    next_chap = supabase.table("chapters").select("start_page_num").eq("book_id", book_id).gt("order_index", chapter.data['order_index']).order("order_index").limit(1).execute()
-    end_page = next_chap.data[0]['start_page_num'] if next_chap.data else start_page + 10
-
-    # 2. Download PDF Bytes (We need bytes for PyMuPDF)
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(file_url)
-        pdf_bytes = resp.content
-
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    
-    global_order_index = 1
-
-    # 3. Iterate Pages
-    # Note: PDF pages are 0-indexed in code, but 1-indexed in DB
-    for page_num in range(start_page - 1, min(end_page - 1, len(doc))):
-        page = doc[page_num]
+    try:
+        # 1. Fetch DB Info
+        chapter = supabase.table("chapters").select("*").eq("id", chapter_id).single().execute()
+        book_id = chapter.data['book_id']
+        start_page = chapter.data['start_page_num']
         
-        # Get blocks (dict gives us structure: text, images, fonts)
-        blocks = page.get_text("dict")["blocks"]
-        
-        for block in blocks:
-            # TYPE 1: IMAGE
-            if block["type"] == 1: 
-                # Check size to avoid tiny icons (e.g., < 100x100)
-                if block["width"] < 100 or block["height"] < 100:
-                    continue
+        book = supabase.table("course_books").select("file_url").eq("id", book_id).single().execute()
+        file_url = book.data['file_url']
 
-                # Extract Image
-                image_bytes = block["image"]
-                ext = block["ext"]
-                filename = f"{book_id}/{chapter_id}_{global_order_index}.{ext}"
-                
-                # Upload to Supabase Storage
-                try:
-                    supabase.storage.from_("book-assets").upload(
-                        path=filename,
-                        file=image_bytes,
-                        file_options={"content-type": f"image/{ext}", "upsert": "true"}
-                    )
-                    public_url = supabase.storage.from_("book-assets").get_public_url(filename)
+        # Get End Page
+        next_chap = supabase.table("chapters").select("start_page_num").eq("book_id", book_id).gt("order_index", chapter.data['order_index']).order("order_index").limit(1).execute()
+        end_page = next_chap.data[0]['start_page_num'] if next_chap.data else start_page + 10
+
+        print(f"📖 Reading from PDF: Page {start_page} to {end_page}")
+
+        # 2. Download PDF
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(file_url)
+            pdf_bytes = resp.content
+
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        
+        global_order_index = 1
+
+        # 3. Iterate Pages
+        # fitz uses 0-indexed pages, DB uses 1-indexed
+        for page_num in range(start_page - 1, min(end_page - 1, len(doc))):
+            page = doc[page_num]
+            blocks = page.get_text("dict")["blocks"]
+            
+            for block in blocks:
+                # --- IMAGES ---
+                if block["type"] == 1: 
+                    if block["width"] < 100 or block["height"] < 100: continue
                     
-                    # Save to DB
-                    supabase.table("paragraphs").insert({
-                        "chapter_id": chapter_id,
-                        "content": public_url, # URL
-                        "type": "image",
-                        "order_index": global_order_index,
-                        "section_title": "Visual Aid", # You can make this smarter later
-                        "is_completed": False
-                    }).execute()
-                    global_order_index += 1
-                except Exception as e:
-                    print(f"Image upload failed: {e}")
+                    # Upload Image Logic (Simplified for stability)
+                    try:
+                        ext = block["ext"]
+                        image_bytes = block["image"]
+                        filename = f"{book_id}/{chapter_id}_{global_order_index}.{ext}"
+                        
+                        supabase.storage.from_("book-assets").upload(
+                            path=filename, file=image_bytes,
+                            file_options={"content-type": f"image/{ext}", "upsert": "true"}
+                        )
+                        public_url = supabase.storage.from_("book-assets").get_public_url(filename)
+                        
+                        supabase.table("paragraphs").insert({
+                            "chapter_id": chapter_id, "content": public_url, "type": "image",
+                            "order_index": global_order_index, "is_completed": False
+                        }).execute()
+                        global_order_index += 1
+                    except Exception as img_err:
+                        print(f"⚠️ Image skip: {img_err}")
 
-            # TYPE 2: TEXT or CODE
-            elif block["type"] == 0:
-                text_content = ""
-                is_code_block = False
-                
-                # Analyze lines/spans to detect Code Fonts
-                for line in block["lines"]:
-                    for span in line["spans"]:
-                        text_content += span["text"] + " "
-                        # Heuristic: Check if font name contains 'Mono', 'Courier', 'Console'
-                        font_name = span["font"].lower()
-                        if any(x in font_name for x in ['mono', 'courier', 'consolas', 'typewriter']):
-                            is_code_block = True
-                    text_content += "\n"
+                # --- TEXT ---
+                elif block["type"] == 0:
+                    text_content = ""
+                    for line in block["lines"]:
+                        for span in line["spans"]:
+                            text_content += span["text"] + " "
+                    
+                    clean_text = text_content.strip()
+                    if clean_text:
+                        supabase.table("paragraphs").insert({
+                            "chapter_id": chapter_id, "content": clean_text, "type": "text",
+                            "order_index": global_order_index, "is_completed": False
+                        }).execute()
+                        global_order_index += 1
 
-                clean_text = text_content.strip()
-                if not clean_text:
-                    continue
+        print(f"✅ Finished generating Chapter: {chapter.data['title']}")
 
-                # Save to DB
-                supabase.table("paragraphs").insert({
-                    "chapter_id": chapter_id,
-                    "content": clean_text,
-                    "type": "code" if is_code_block else "text",
-                    "order_index": global_order_index,
-                    "section_title": "General", # Or logic to detect headers
-                    "is_completed": False
-                }).execute()
-                global_order_index += 1
-
-    print(f"✅ Processed Chapter {chapter_id}")
+    except Exception as e:
+        print(f"❌ Error generating chapter: {str(e)}")
 
 
         
