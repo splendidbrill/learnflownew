@@ -1128,7 +1128,7 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
               The AI hasn't read this chapter yet. Click below to generate the learning modules.
             </p>
             <button
-              onClick={handleGenerateClick}
+              onClick={handleGenerateChapterContent}
               disabled={isGenerating}
               className="px-8 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold shadow-lg shadow-purple-900/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2 mx-auto"
             >
@@ -1319,7 +1319,7 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
       </div>
 
       {/* MIDDLE SECTION */}
-      <div className="flex-1 flex flex-col min-w-0 bg-[#13002b] relative">
+      <div className="flex-1 overflow-y-auto relative scrollbar-thin scrollbar-thumb-purple-600/50 scrollbar-track-transparent">
         {!isSidebarOpen && (
           <button
             onClick={() => setIsSidebarOpen(true)}

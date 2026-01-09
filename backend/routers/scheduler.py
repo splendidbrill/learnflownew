@@ -1,4 +1,5 @@
 import os
+import json
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -167,28 +168,32 @@ async def create_schedule(req: CreateScheduleRequest):
     try:
         # 3. Register with Upstash
         # We pass the 'channels' list into the body so the trigger knows who to message
+        
+         try:
+        # A. 30 Minute Trigger
         res_30 = qstash_client.schedule.create(
             cron=cron_30,
             destination=f"{os.getenv('APP_URL')}/api/cron/trigger",
-            body={
+            body=json.dumps({  # <--- 2. WRAP IN JSON.DUMPS
                 "type": "30min", 
                 "userId": req.userId, 
                 "bookId": req.bookId, 
                 "chatId": req.chatId,
                 "channels": req.channels
-            },
+            }),
         )
         
+        # B. 5 Minute Trigger
         res_5 = qstash_client.schedule.create(
             cron=cron_5,
             destination=f"{os.getenv('APP_URL')}/api/cron/trigger",
-            body={
+            body=json.dumps({  # <--- 3. WRAP IN JSON.DUMPS
                 "type": "5min", 
                 "userId": req.userId, 
                 "bookId": req.bookId, 
                 "chatId": req.chatId,
                 "channels": req.channels
-            },
+            }),
         )
 
         # 4. Save to Supabase
