@@ -193,11 +193,12 @@ class ChapterStructure(BaseModel):
 async def process_book(book_id: str, file_url: str, interest: str, book_type: str):
     print(f"🚀 Starting Structure Scan for Book: {book_id}")
     
-    # 1. Update Status in 'course_books' (IMMEDIATELY)
+    # 1. Update Status to PROCESSING (Your snippet)
+    # This makes the UI show the blue "Processing" badge
     supabase.table("course_books").update({"status": "processing"}).eq("id", book_id).execute()
     
     try:
-        # 2. Load PDF & Extract Text (First 20 pages only)
+        # 2. Load PDF & Extract Text (First 20 pages only for ToC)
         loader = PyPDFLoader(file_url)
         pages = loader.load()
         print(f"📄 Loaded {len(pages)} pages")
@@ -208,6 +209,7 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
             toc_text += p.page_content + "\n"
 
         # 3. ASK AI FOR THE MAP
+        # Uses the global 'llm' (which should be Llama 3.3 70b or GPT-4o-mini)
         prompt = f"""
         You are a JSON parser. 
         Analyze this book text. Find the "Table of Contents" (or Contents/Index).
@@ -230,12 +232,10 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
         }}
         """
         
-        # Using Llama-3.1-8b-Instant (Fast & Cheap)
         ai_response = llm.invoke(prompt)
         raw_content = ai_response.content
         
-        # 4. ROBUST JSON EXTRACTION (REGEX)
-        # This finds the first '{' and the last '}' to isolate the JSON, ignoring extra text.
+        # 4. JSON EXTRACTION
         try:
             json_match = re.search(r"\{.*\}", raw_content, re.DOTALL)
             if json_match:
@@ -251,7 +251,11 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
         chapters_list = data.get("chapters", [])
         print(f"🗺️ Found {len(chapters_list)} chapters in structure.")
 
-        # 5. Save Structure to DB (Skeleton)
+        # --- FIX: DELETE EXISTING CHAPTERS TO PREVENT DUPLICATES ---
+        supabase.table("chapters").delete().eq("book_id", book_id).execute()
+        # -----------------------------------------------------------
+
+        # 5. Save New Structure to DB
         for i, chap in enumerate(chapters_list):
             supabase.table("chapters").insert({
                 "book_id": book_id,
@@ -260,13 +264,15 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
                 "start_page_num": chap.get('start_page', 0)
             }).execute()
 
-        # 6. Mark as Completed in 'course_books'
+        # 6. Mark as COMPLETED
+        # This makes the UI show the Green "Completed" badge
         supabase.table("course_books").update({"status": "completed"}).eq("id", book_id).execute()
         print(f"✅ Structure Scan Complete for: {book_id}")
 
     except Exception as e:
         print(f"❌ Error scanning book: {str(e)}")
-        # 7. Mark as Failed in 'course_books'
+        # 7. Mark as FAILED
+        # This stops the spinner and shows the Error UI
         supabase.table("course_books").update({"status": "failed"}).eq("id", book_id).execute()
         
 
