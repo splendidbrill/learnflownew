@@ -157,7 +157,11 @@ async def set_telegram_webhook():
 #     temperature=0.3
 # )
 
-llm = ChatGroq(model="llama-3.2-11b-vision-preview", api_key=groq_key)
+llm = ChatGroq(
+    model="llama-3.3-70b-versatile", # <--- Excellent for JSON & Text
+    api_key=groq_key,
+    temperature=0.1 # Low temp is better for strict JSON
+)
 
 class IngestRequest(BaseModel):
     bookId: str
