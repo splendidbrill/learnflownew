@@ -10,6 +10,8 @@ import {
   Clock, 
   Library, 
   TrendingUp,
+  Zap,
+  Flame,
   AlertTriangle
 } from 'lucide-react';
 
@@ -50,7 +52,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSubjectModalOpen, setIsSubjectModalOpen] = useState(false);
   const [editingSubject, setEditingSubject] = useState<Subject | null>(null);
-  
+  const [statsData, setStatsData] = useState({ xp: 0, streak: 0, rank: 'Novice', level: 1 });
   // Modal State for Books
   const [bookModalState, setBookModalState] = useState<{ 
     isOpen: boolean; 
@@ -74,6 +76,79 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
     id: null,
     name: ''
   });
+
+ // ... inside Dashboard component ...
+
+ useEffect(() => {
+  const fetchAllData = async () => {
+    if (!user) return;
+
+    try {
+      // 1. Fetch Subjects & Books (Your existing logic)
+      const { data: coursesData, error } = await supabase
+        .from('courses')
+        .select(`*, course_books(*)`)
+        .eq('user_id', user.id) // Ensure we only get this user's data
+        .order('created_at', { ascending: true });
+
+      if (error) throw error;
+
+      // 2. Fetch Gamification Stats (NEW API CALL)
+      const statsRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/stats/${user.id}`);
+      const statsData = await statsRes.json();
+
+      // 3. Process Courses Data
+      let totalBooks = 0;
+      const formattedSubjects: Subject[] = (coursesData || []).map((s: any) => {
+        const books = s.course_books || [];
+        totalBooks += books.length;
+        return {
+          id: s.id,
+          user_id: s.user_id,
+          name: s.name,
+          color: s.color,
+          description: s.description,
+          created_at: s.created_at,
+          bookCount: books.length,
+          recentBooks: books.map((b: any) => ({
+            id: b.id,
+            title: b.title,
+            author: b.author,
+            description: b.description,
+            color: s.color, // Inherit subject color
+            fileUrl: b.file_url,
+            analogy_topic: b.analogy_topic
+          })),
+          isActive: false,
+          progress: 0 // You can calculate this later based on paragraphs
+        };
+      });
+
+      // 4. Update the Store with MERGED data
+      useStore.setState({ 
+        subjects: formattedSubjects,
+        stats: {
+          subjects: formattedSubjects.length,
+          totalBooks: totalBooks,
+          completed: 0, // Calculate this if you want exact completed count
+          progress: 0,
+          // REAL GAMIFICATION DATA:
+          xp: statsData.xp || 0,
+          streak: statsData.streak || 0,
+          level: statsData.level || 1,
+          rank: statsData.rank || "Novice"
+        }
+      });
+
+    } catch (error) {
+      console.error('Error fetching dashboard data:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  fetchAllData();
+}, [user, supabase]);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -120,6 +195,32 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
     if (user) {
       fetchData();
     }
+
+    // Inside Dashboard.tsx useEffect
+
+    const fetchStats = async () => {
+      try {
+          const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/stats/${user.id}`);
+          const data = await res.json();
+          
+          // Update your Zustand store or local state with real data
+          useStore.setState(prev => ({
+              stats: {
+                  ...prev.stats,
+                  xp: data.xp, // You might need to add 'xp' to your store types
+                  streak: data.streak,
+                  rank: data.rank
+              }
+          }));
+      } catch (e) {
+          console.error("Failed to load stats", e);
+      }
+  };
+  
+  if (user) {
+      fetchData();
+      fetchStats(); // <--- Call the new function
+  }
   }, [user, supabase, setSubjects]);
 
   // --- Handlers ---
@@ -311,11 +412,36 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
           </header>
 
           {/* Stats Section */}
+          {/* Stats Section */}
           <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            <StatCard title="Subjects" value={stats.subjects} icon={BookOpen} />
-            <StatCard title="Total Books" value={stats.totalBooks} icon={BookIcon} />
-            <StatCard title="Completed" value={stats.completed} icon={CheckCircle} />
-            <StatCard title="Progress" value={`${stats.progress}%`} icon={BarChart2} showProgressBar progressValue={stats.progress} />
+            {/* 1. XP CARD */}
+            <StatCard 
+              title="Total XP" 
+              value={stats.xp || 0} 
+              icon={Zap} 
+              subtext={`Lvl ${stats.level || 1} - ${stats.rank || 'Novice'}`} 
+            />
+            
+            {/* 2. STREAK CARD */}
+            <StatCard 
+              title="Day Streak" 
+              value={stats.streak || 0} 
+              icon={Flame} 
+            />
+            
+            {/* 3. EXISTING TOTAL BOOKS */}
+            <StatCard 
+              title="Total Books" 
+              value={stats.totalBooks} 
+              icon={BookIcon} 
+            />
+
+            {/* 4. EXISTING SUBJECTS */}
+            <StatCard 
+              title="Subjects" 
+              value={stats.subjects} 
+              icon={BookOpen} 
+            />
           </section>
 
           {/* Subjects Section */}

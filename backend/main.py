@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 from typing import List
 
+
 # --- IMPORTS ---
 from langchain_community.document_loaders import PyPDFLoader
 
@@ -27,7 +28,7 @@ from langchain_groq import ChatGroq
 from db import supabase 
 
 # Import the new Router
-from routers import scheduler
+from routers import scheduler, stats
 
 # 1. Load Env
 env_path = Path(__file__).parent / '.env'
@@ -40,6 +41,7 @@ def health_check():
     return {"status": "active", "message": "LearnFlow Backend is Online 🚀"}
 
 app.include_router(scheduler.router, prefix="/api")
+app.include_router(stats.router, prefix="/api") 
 
 # 2. CORS
 app.add_middleware(

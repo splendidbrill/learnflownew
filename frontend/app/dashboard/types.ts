@@ -45,3 +45,15 @@ export interface StoreState {
   
   setActiveBook: (book: Book | null) => void;
 }
+
+export interface Stats {
+  subjects: number;
+  totalBooks: number;
+  completed: number;
+  progress: number;
+  // New Gamification Fields
+  xp: number;
+  streak: number;
+  level: number;
+  rank: string;
+}
