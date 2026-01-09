@@ -12,6 +12,6 @@ langchain
 langchain-community
 langchain-core
 langchain-groq
-
+pymupdf
 pytz
 qstash

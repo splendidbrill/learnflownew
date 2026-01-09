@@ -1,6 +1,7 @@
 
 
 import os
+import fitz
 import time
 import re
 import json
@@ -64,6 +65,63 @@ if not groq_key:
 
 supabase: Client = create_client(url, key)
 
+# Add this model at the top
+class ImageAnalysisRequest(BaseModel):
+    paragraphId: str
+    imageUrl: str
+    analogyTopic: str
+
+@app.post("/api/analyze-image")
+async def analyze_image_endpoint(req: ImageAnalysisRequest):
+    print(f"👁️ Analyzing Image for Para: {req.paragraphId}")
+
+    # 1. Check if we already have an explanation (Cache)
+    existing = supabase.table("paragraphs").select("explanation").eq("id", req.paragraphId).single().execute()
+    if existing.data and existing.data.get("explanation"):
+        return {"explanation": existing.data["explanation"]}
+
+    # 2. Call Llama 3.2 Vision (via Groq)
+    # Note: Llama 3.2 Vision supports image URLs directly
+    prompt = f"""
+    You are a Physics Tutor. 
+    Analyze this image and explain the concept using a '{req.analogyTopic}' analogy.
+    Keep it short and clear.
+    """
+    
+    try:
+        # Construct the message for Groq Vision
+        msg = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": req.imageUrl
+                        }
+                    }
+                ]
+            }
+        ]
+        
+        # We need a vision-capable client definition here
+        # Assuming 'llm' is ChatGroq, we might need to invoke it differently or use the Groq client directly for vision 
+        # For simplicity with LangChain ChatGroq (if it supports vision):
+        response = llm.invoke(msg) 
+        explanation = response.content
+
+        # 3. Save to DB
+        supabase.table("paragraphs").update({
+            "explanation": explanation
+        }).eq("id", req.paragraphId).execute()
+
+        return {"explanation": explanation}
+
+    except Exception as e:
+        print(f"Vision Error: {e}")
+        return {"explanation": "I couldn't analyze this image right now. Try again later."}
+
 @app.on_event("startup")
 async def set_telegram_webhook():
     """
@@ -93,11 +151,13 @@ async def set_telegram_webhook():
 
 # 4. Setup AI (GROQ - Llama 3 8B)
 # This model is Free, Fast, and Good at JSON.
-llm = ChatGroq(
-    model="llama-3.1-8b-instant", 
-    api_key=groq_key,
-    temperature=0.3
-)
+# llm = ChatGroq(
+#     model="llama-3.1-8b-instant", 
+#     api_key=groq_key,
+#     temperature=0.3
+# )
+
+llm = ChatGroq(model="llama-3.2-11b-vision-preview", api_key=groq_key)
 
 class IngestRequest(BaseModel):
     bookId: str
@@ -318,128 +378,229 @@ async def chat_endpoint(req: ChatRequest):
 #     return {"status": "started", "message": "Generating chapter content..."}
 
 # 2. THE LOGIC
-async def process_chapter_content(chapter_id: str):
-    print(f"⚡ Generating granular structure for Chapter ID: {chapter_id}")
+# async def process_chapter_content(chapter_id: str):
+#     print(f"⚡ Generating granular structure for Chapter ID: {chapter_id}")
     
-    try:
-        # 1. Fetch Chapter Info
-        chapter = supabase.table("chapters").select("*").eq("id", chapter_id).single().execute()
-        chap_data = chapter.data
-        book_id = chap_data['book_id']
-        start_page = chap_data['start_page_num']
+#     try:
+#         # 1. Fetch Chapter Info
+#         chapter = supabase.table("chapters").select("*").eq("id", chapter_id).single().execute()
+#         chap_data = chapter.data
+#         book_id = chap_data['book_id']
+#         start_page = chap_data['start_page_num']
         
-        # 2. Fetch File URL
-        book = supabase.table("course_books").select("file_url").eq("id", book_id).single().execute()
-        file_url = book.data['file_url']
+#         # 2. Fetch File URL
+#         book = supabase.table("course_books").select("file_url").eq("id", book_id).single().execute()
+#         file_url = book.data['file_url']
 
-        # 3. Determine End Page
-        next_chap = supabase.table("chapters")\
-            .select("start_page_num")\
-            .eq("book_id", book_id)\
-            .gt("order_index", chap_data['order_index'])\
-            .order("order_index")\
-            .limit(1)\
-            .execute()
+#         # 3. Determine End Page
+#         next_chap = supabase.table("chapters")\
+#             .select("start_page_num")\
+#             .eq("book_id", book_id)\
+#             .gt("order_index", chap_data['order_index'])\
+#             .order("order_index")\
+#             .limit(1)\
+#             .execute()
 
-        end_page = next_chap.data[0]['start_page_num'] if next_chap.data else start_page + 20
-        print(f"📖 Reading pages {start_page} to {end_page}...")
+#         end_page = next_chap.data[0]['start_page_num'] if next_chap.data else start_page + 20
+#         print(f"📖 Reading pages {start_page} to {end_page}...")
 
-        # 4. Load & Extract Text
-        loader = PyPDFLoader(file_url)
-        all_pages = loader.load()
+#         # 4. Load & Extract Text
+#         loader = PyPDFLoader(file_url)
+#         all_pages = loader.load()
         
-        total_pages = len(all_pages)
-        start_idx = max(0, start_page - 1)
-        end_idx = min(total_pages, end_page - 1)
-        chapter_pages = all_pages[start_idx:end_idx]
-        chapter_text = "\n".join([p.page_content for p in chapter_pages])
+#         total_pages = len(all_pages)
+#         start_idx = max(0, start_page - 1)
+#         end_idx = min(total_pages, end_page - 1)
+#         chapter_pages = all_pages[start_idx:end_idx]
+#         chapter_text = "\n".join([p.page_content for p in chapter_pages])
         
-        if not chapter_text:
-            print("⚠️ Warning: Extracted text is empty.")
-            return
+#         if not chapter_text:
+#             print("⚠️ Warning: Extracted text is empty.")
+#             return
 
-        # 5. INTELLIGENT PARSING (Updated for Stability)
-        # Reduced chunk size to 4000 to prevent JSON syntax errors
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=4000, chunk_overlap=200)
-        raw_chunks = text_splitter.split_text(chapter_text)
+#         # 5. INTELLIGENT PARSING (Updated for Stability)
+#         # Reduced chunk size to 4000 to prevent JSON syntax errors
+#         text_splitter = RecursiveCharacterTextSplitter(chunk_size=4000, chunk_overlap=200)
+#         raw_chunks = text_splitter.split_text(chapter_text)
 
-        global_order_index = 1
+#         global_order_index = 1
 
-        for raw_chunk in raw_chunks:
-            # We explicitly ask for "Strict JSON" and escaping
-            prompt = f"""
-            You are a rigorous data parser. Convert the text below into strict JSON.
+#         for raw_chunk in raw_chunks:
+#             # We explicitly ask for "Strict JSON" and escaping
+#             prompt = f"""
+#             You are a rigorous data parser. Convert the text below into strict JSON.
             
-            RULES:
-            1. Identify Section Headers (e.g., "**Title**") or use "General" if none.
-            2. Split text into paragraphs.
-            3. ESCAPE all double quotes inside the text (e.g. " becomes \").
-            4. Do NOT use trailing commas.
-            5. Return ONLY valid JSON.
+#             RULES:
+#             1. Identify Section Headers (e.g., "**Title**") or use "General" if none.
+#             2. Split text into paragraphs.
+#             3. ESCAPE all double quotes inside the text (e.g. " becomes \").
+#             4. Do NOT use trailing commas.
+#             5. Return ONLY valid JSON.
             
-            RAW TEXT:
-            {raw_chunk}
+#             RAW TEXT:
+#             {raw_chunk}
 
-            JSON STRUCTURE:
-            {{
-                "sections": [
-                    {{
-                        "title": "Section Name",
-                        "paragraphs": ["Para 1 content...", "Para 2 content..."]
-                    }}
-                ]
-            }}
-            """
+#             JSON STRUCTURE:
+#             {{
+#                 "sections": [
+#                     {{
+#                         "title": "Section Name",
+#                         "paragraphs": ["Para 1 content...", "Para 2 content..."]
+#                     }}
+#                 ]
+#             }}
+#             """
             
-            response = llm.invoke(prompt)
-            clean_content = response.content
+#             response = llm.invoke(prompt)
+#             clean_content = response.content
 
-            # Helper: Try to clean common JSON errors from LLMs
-            try:
-                # Find the JSON object
-                json_match = re.search(r"\{.*\}", clean_content, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group(0)
-                    # Attempt to parse
-                    data = json.loads(json_str)
+#             # Helper: Try to clean common JSON errors from LLMs
+#             try:
+#                 # Find the JSON object
+#                 json_match = re.search(r"\{.*\}", clean_content, re.DOTALL)
+#                 if json_match:
+#                     json_str = json_match.group(0)
+#                     # Attempt to parse
+#                     data = json.loads(json_str)
                     
-                    sections = data.get('sections', [])
+#                     sections = data.get('sections', [])
 
-                    for section in sections:
-                        sec_title = section.get('title', 'General')
-                        for para_text in section.get('paragraphs', []):
-                            supabase.table("paragraphs").insert({
-                                "chapter_id": chapter_id,
-                                "content": para_text,
-                                "section_title": sec_title,
-                                "order_index": global_order_index,
-                                "type": "text",
-                                "is_completed": False
-                            }).execute()
-                            global_order_index += 1
-                else:
-                    raise ValueError("No JSON found")
+#                     for section in sections:
+#                         sec_title = section.get('title', 'General')
+#                         for para_text in section.get('paragraphs', []):
+#                             supabase.table("paragraphs").insert({
+#                                 "chapter_id": chapter_id,
+#                                 "content": para_text,
+#                                 "section_title": sec_title,
+#                                 "order_index": global_order_index,
+#                                 "type": "text",
+#                                 "is_completed": False
+#                             }).execute()
+#                             global_order_index += 1
+#                 else:
+#                     raise ValueError("No JSON found")
                             
-            except Exception as parse_e:
-                print(f"⚠️ JSON Parse Error: {parse_e}")
-                print(f"⚠️ Raw Response start: {clean_content[:100]}...")
+#             except Exception as parse_e:
+#                 print(f"⚠️ JSON Parse Error: {parse_e}")
+#                 print(f"⚠️ Raw Response start: {clean_content[:100]}...")
                 
-                # FALLBACK: Save the raw text so the user doesn't see nothing
+#                 # FALLBACK: Save the raw text so the user doesn't see nothing
+#                 supabase.table("paragraphs").insert({
+#                     "chapter_id": chapter_id,
+#                     "content": raw_chunk,
+#                     "section_title": "General", # Fallback title
+#                     "order_index": global_order_index,
+#                     "type": "text",
+#                     "is_completed": False
+#                 }).execute()
+#                 global_order_index += 1
+
+#         print(f"✅ Granular processing complete for {chapter_id}")
+
+#     except Exception as e:
+#         print(f"❌ Critical Error: {str(e)}")
+
+
+async def process_chapter_content(chapter_id: str):
+    print(f"⚡ Processing Chapter: {chapter_id}")
+    
+    # 1. Fetch DB Info (Same as before)
+    chapter = supabase.table("chapters").select("*").eq("id", chapter_id).single().execute()
+    book_id = chapter.data['book_id']
+    start_page = chapter.data['start_page_num']
+    
+    # Get file URL
+    book = supabase.table("course_books").select("file_url").eq("id", book_id).single().execute()
+    file_url = book.data['file_url']
+
+    # Get End Page
+    next_chap = supabase.table("chapters").select("start_page_num").eq("book_id", book_id).gt("order_index", chapter.data['order_index']).order("order_index").limit(1).execute()
+    end_page = next_chap.data[0]['start_page_num'] if next_chap.data else start_page + 10
+
+    # 2. Download PDF Bytes (We need bytes for PyMuPDF)
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(file_url)
+        pdf_bytes = resp.content
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    
+    global_order_index = 1
+
+    # 3. Iterate Pages
+    # Note: PDF pages are 0-indexed in code, but 1-indexed in DB
+    for page_num in range(start_page - 1, min(end_page - 1, len(doc))):
+        page = doc[page_num]
+        
+        # Get blocks (dict gives us structure: text, images, fonts)
+        blocks = page.get_text("dict")["blocks"]
+        
+        for block in blocks:
+            # TYPE 1: IMAGE
+            if block["type"] == 1: 
+                # Check size to avoid tiny icons (e.g., < 100x100)
+                if block["width"] < 100 or block["height"] < 100:
+                    continue
+
+                # Extract Image
+                image_bytes = block["image"]
+                ext = block["ext"]
+                filename = f"{book_id}/{chapter_id}_{global_order_index}.{ext}"
+                
+                # Upload to Supabase Storage
+                try:
+                    supabase.storage.from_("book-assets").upload(
+                        path=filename,
+                        file=image_bytes,
+                        file_options={"content-type": f"image/{ext}", "upsert": "true"}
+                    )
+                    public_url = supabase.storage.from_("book-assets").get_public_url(filename)
+                    
+                    # Save to DB
+                    supabase.table("paragraphs").insert({
+                        "chapter_id": chapter_id,
+                        "content": public_url, # URL
+                        "type": "image",
+                        "order_index": global_order_index,
+                        "section_title": "Visual Aid", # You can make this smarter later
+                        "is_completed": False
+                    }).execute()
+                    global_order_index += 1
+                except Exception as e:
+                    print(f"Image upload failed: {e}")
+
+            # TYPE 2: TEXT or CODE
+            elif block["type"] == 0:
+                text_content = ""
+                is_code_block = False
+                
+                # Analyze lines/spans to detect Code Fonts
+                for line in block["lines"]:
+                    for span in line["spans"]:
+                        text_content += span["text"] + " "
+                        # Heuristic: Check if font name contains 'Mono', 'Courier', 'Console'
+                        font_name = span["font"].lower()
+                        if any(x in font_name for x in ['mono', 'courier', 'consolas', 'typewriter']):
+                            is_code_block = True
+                    text_content += "\n"
+
+                clean_text = text_content.strip()
+                if not clean_text:
+                    continue
+
+                # Save to DB
                 supabase.table("paragraphs").insert({
                     "chapter_id": chapter_id,
-                    "content": raw_chunk,
-                    "section_title": "General", # Fallback title
+                    "content": clean_text,
+                    "type": "code" if is_code_block else "text",
                     "order_index": global_order_index,
-                    "type": "text",
+                    "section_title": "General", # Or logic to detect headers
                     "is_completed": False
                 }).execute()
                 global_order_index += 1
 
-        print(f"✅ Granular processing complete for {chapter_id}")
+    print(f"✅ Processed Chapter {chapter_id}")
 
-    except Exception as e:
-        print(f"❌ Critical Error: {str(e)}")
-        
+
         
 if __name__ == "__main__":
     import uvicorn
