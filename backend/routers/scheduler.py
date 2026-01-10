@@ -169,7 +169,6 @@ async def create_schedule(req: CreateScheduleRequest):
         # 3. Register with Upstash
         # We pass the 'channels' list into the body so the trigger knows who to message
         
-         try:
         # A. 30 Minute Trigger
         res_30 = qstash_client.schedule.create(
             cron=cron_30,
