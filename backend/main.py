@@ -84,7 +84,7 @@ async def analyze_image_endpoint(req: ImageAnalysisRequest):
     # 2. Setup SPECIFIC Vision Model (Llama 3.2 90B Vision)
     # We create this client ONLY when needed
     vision_llm = ChatGroq(
-        model="llama-3.2-90b-vision-preview", # <--- The dedicated Vision model
+        model="llama-3.2-11b-vision-instruct", # <--- The dedicated Vision model
         api_key=groq_key,
         temperature=0.2
     )
@@ -197,89 +197,95 @@ import json
 
 async def process_book(book_id: str, file_url: str, interest: str, book_type: str):
     print(f"🚀 Starting Structure Scan for Book: {book_id}")
-    
-    # 1. Status Update
     supabase.table("course_books").update({"status": "processing"}).eq("id", book_id).execute()
     
     try:
-        # 2. Download PDF (Bytes only)
+        # 1. Download PDF
         async with httpx.AsyncClient() as client:
             resp = await client.get(file_url)
             pdf_bytes = resp.content
 
-        # 3. Light-weight Parse (PyMuPDF)
-        # This uses C++ bindings so it doesn't eat Python RAM
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        print(f"📄 PDF Loaded. Total Pages: {len(doc)}")
-
-        toc_text = ""
-        # Scan ONLY first 20 pages
-        scan_limit = min(20, len(doc))
         
-        for i in range(scan_limit):
-            page = doc[i]
-            toc_text += page.get_text() + "\n"
+        # 2. Extract ToC Text (First 20 pages)
+        toc_text = ""
+        for i in range(min(20, len(doc))):
+            toc_text += doc[i].get_text() + "\n"
 
-        # 4. AI Analysis (Same as before)
+        # 3. AI: Extract Chapters & Printed Page Numbers
         prompt = f"""
-        You are a JSON parser. 
-        Analyze this book text. Find the "Table of Contents" (or Contents/Index).
-        Extract a list of Chapters and their STARTING PAGE NUMBER.
+        You are a JSON parser. Extract the Table of Contents.
         
         RULES:
-        1. Ignore the Preface, Foreword, or Introduction if they are roman numerals (i, ii, etc).
-        2. Look for patterns like "Chapter 1 ..... 5" or "1. The Beginning ..... 5".
-        3. Return JSON ONLY. No conversation.
+        1. Return a JSON object with a "chapters" list.
+        2. Each chapter: {{ "title": "Chapter Name", "start_page": 5 }}
+        3. 'start_page' must be the NUMBER printed in the book, not the PDF page index.
         
-        TEXT PREVIEW:
+        TEXT:
         {toc_text[:15000]}...
-
-        OUTPUT FORMAT:
-        {{
-            "chapters": [
-                {{ "title": "Chapter 1: Name", "start_page": 5 }},
-                {{ "title": "Chapter 2: Name", "start_page": 12 }}
-            ]
-        }}
+        
+        OUTPUT JSON:
         """
         
-        # Use the Text Model (Global llm)
+        # Use Global Text LLM
         ai_response = llm.invoke(prompt)
-        raw_content = ai_response.content
         
-        # 5. JSON Extraction
-        try:
-            json_match = re.search(r"\{.*\}", raw_content, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group(0))
-            else:
-                raise ValueError("No JSON object found")
-        except Exception as parse_error:
-            print(f"⚠️ JSON Parse Failed: {parse_error}")
-            raise parse_error
-
+        # Extract JSON
+        json_match = re.search(r"\{.*\}", ai_response.content, re.DOTALL)
+        if not json_match: raise ValueError("No JSON found")
+        data = json.loads(json_match.group(0))
         chapters_list = data.get("chapters", [])
-        print(f"🗺️ Found {len(chapters_list)} chapters.")
 
-        # Cleanup Old Data
+        # --- 4. SMART OFFSET CALCULATION (The Fix) ---
+        offset = 0
+        if chapters_list:
+            first_chap_title = chapters_list[0]['title']
+            printed_start = chapters_list[0].get('start_page', 1)
+            
+            print(f"🕵️ Looking for Chapter 1: '{first_chap_title}' to calculate offset...")
+            
+            # Scan first 50 pages to find where Chapter 1 actually starts
+            found_page_idx = -1
+            for i in range(min(50, len(doc))):
+                page_text = doc[i].get_text().lower()
+                # Clean title for comparison
+                clean_title = first_chap_title.lower().replace("chapter", "").strip()
+                
+                # Check if title matches reasonably well
+                if clean_title in page_text:
+                    found_page_idx = i
+                    break
+            
+            if found_page_idx != -1:
+                # Calculate Offset: Actual PDF Page - Printed Page
+                # Example: Found on Index 14 (Page 15), Printed is 1. Offset = 14.
+                offset = found_page_idx - (printed_start - 1) 
+                print(f"🎯 Found Chapter 1 at PDF Page {found_page_idx}. Printed Page {printed_start}. Offset: {offset}")
+            else:
+                print("⚠️ Could not find Chapter 1 title. Assuming Offset = 0 (Risky)")
+
+        # 5. Save to DB with Corrected Pages
         supabase.table("chapters").delete().eq("book_id", book_id).execute()
 
-        # 6. Save to DB
         for i, chap in enumerate(chapters_list):
+            raw_page = chap.get('start_page', 0)
+            # Apply Offset
+            corrected_page = raw_page + offset
+            
             supabase.table("chapters").insert({
                 "book_id": book_id,
                 "title": chap['title'],
                 "order_index": i + 1,
-                "start_page_num": chap.get('start_page', 0)
+                "start_page_num": corrected_page # <--- SAVING REAL PDF PAGE
             }).execute()
 
-        # 7. Success
         supabase.table("course_books").update({"status": "completed"}).eq("id", book_id).execute()
-        print(f"✅ Scan Complete for: {book_id}")
+        print(f"✅ Scan Complete. Offset applied: {offset}")
 
     except Exception as e:
-        print(f"❌ Error scanning book: {str(e)}")
+        print(f"❌ Error: {str(e)}")
         supabase.table("course_books").update({"status": "failed"}).eq("id", book_id).execute()
+    
         
 
 
