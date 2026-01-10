@@ -534,6 +534,7 @@ async def process_chapter_content(chapter_id: str):
     print(f"⚡ Processing Chapter: {chapter_id}")
     
     try:
+        # 1. Fetch DB Info
         chapter = supabase.table("chapters").select("*").eq("id", chapter_id).single().execute()
         book_id = chapter.data['book_id']
         start_page = chapter.data['start_page_num']
@@ -541,127 +542,97 @@ async def process_chapter_content(chapter_id: str):
         book = supabase.table("course_books").select("file_url").eq("id", book_id).single().execute()
         file_url = book.data['file_url']
 
-        next_chap_res = supabase.table("chapters").select("start_page_num").eq("book_id", book_id).gt("order_index", chapter.data['order_index']).order("order_index").limit(1).execute()
-        end_page = next_chap_res.data[0]['start_page_num'] if next_chap_res.data else start_page + 10 # Read next 10 pages as fallback
+        # Get End Page
+        next_chap = supabase.table("chapters").select("start_page_num").eq("book_id", book_id).gt("order_index", chapter.data['order_index']).order("order_index").limit(1).execute()
+        end_page = next_chap.data[0]['start_page_num'] if next_chap.data else start_page + 10
 
         print(f"📖 Reading from PDF: Page {start_page} to {end_page}")
 
+        # 2. Download PDF
         async with httpx.AsyncClient() as client:
             resp = await client.get(file_url)
             pdf_bytes = resp.content
 
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         
-        raw_chapter_content = [] # List to hold structured text/image data for LLM
-        current_global_order_index = 1 # To track sequence
+        # Cleanup old paragraphs
+        supabase.table("paragraphs").delete().eq("chapter_id", chapter_id).execute()
 
+        global_order_index = 1
+        current_section = "General"
+
+        # 3. Iterate Pages (Fast Extraction)
+        # Note: start_page from DB is 1-based. fitz is 0-based.
         for page_num in range(start_page - 1, min(end_page - 1, len(doc))):
             page = doc[page_num]
             blocks = page.get_text("dict")["blocks"]
             
             for block in blocks:
-                if block["type"] == 1: # Image
-                    if block["width"] < 100 or block["height"] < 100: continue
+                
+                # --- IMAGES ---
+                if block["type"] == 1: 
+                    # Skip tiny decorative images
+                    if block["width"] < 150 or block["height"] < 150: continue
 
                     try:
                         ext = block["ext"]
                         image_bytes = block["image"]
-                        filename = f"{book_id}/{chapter_id}_{current_global_order_index}.{ext}"
+                        filename = f"{book_id}/{chapter_id}_{global_order_index}.{ext}"
                         
+                        # Upload
                         supabase.storage.from_("book-assets").upload(
                             path=filename, file=image_bytes,
                             file_options={"content-type": f"image/{ext}", "upsert": "true"}
                         )
                         public_url = supabase.storage.from_("book-assets").get_public_url(filename)
                         
-                        # Add image as a structured object for the LLM to process
-                        raw_chapter_content.append({"type": "image", "content": public_url})
-                        current_global_order_index += 1
+                        # Save
+                        supabase.table("paragraphs").insert({
+                            "chapter_id": chapter_id, 
+                            "content": public_url, 
+                            "type": "image",
+                            "order_index": global_order_index, 
+                            "section_title": current_section,
+                            "is_completed": False
+                        }).execute()
+                        global_order_index += 1
                     except Exception as img_err:
-                        print(f"⚠️ Image upload or processing failed, skipping: {img_err}")
+                        print(f"⚠️ Image skip: {img_err}")
 
-                elif block["type"] == 0: # Text
-                    text_lines = []
-                    is_code_block = False
-                    for line in block["lines"]:
-                        line_text = ""
-                        for span in line["spans"]:
-                            line_text += span["text"]
-                            font_name = span["font"].lower()
-                            if any(x in font_name for x in ['mono', 'courier', 'consolas', 'typewriter']):
-                                is_code_block = True
-                        text_lines.append(line_text)
+                # --- TEXT ---
+                elif block["type"] == 0:
+                    block_text = ""
+                    # Simple heuristic: If font is large (>14pt), it's a Header
+                    is_header = False
                     
-                    clean_text = "\n".join(text_lines).strip()
-                    if clean_text:
-                        raw_chapter_content.append({
-                            "type": "code" if is_code_block else "text", 
-                            "content": clean_text
-                        })
-                        current_global_order_index += 1
+                    for line in block["lines"]:
+                        for span in line["spans"]:
+                            block_text += span["text"] + " "
+                            if span["size"] > 14: # Font size threshold for headers
+                                is_header = True
+                    
+                    clean_text = block_text.strip()
+                    if not clean_text: continue
 
-        # Now, send this raw, structured content to LLM for final processing
-        content_for_llm = json.dumps(raw_chapter_content) # Convert to string for LLM
-
-        llm_prompt = f"""
-        You are an intelligent document processor. You have been given raw content (text, code, image URLs) from a book chapter.
-        
-        RAW CHAPTER CONTENT (JSON Array):
-        {content_for_llm}
-
-        TASK:
-        1. Extract the main content of the chapter.
-        2. Filter out irrelevant introductory text like "CONTENTS", "FOREWORD", copyright notices, or page numbers.
-        3. Identify clear section headers within the text.
-        4. Break down the content under each header into distinct paragraphs.
-        5. For images, re-insert them at their logical position within the paragraphs.
-        6. For code blocks, preserve their formatting.
-        7. Maintain the original sequence of content.
-        
-        OUTPUT JSON STRUCTURE:
-        {{
-            "sections": [
-                {{
-                    "title": "Section Title (or 'General' if no clear header)",
-                    "blocks": [
-                        {{ "type": "text", "content": "Paragraph 1 content..." }},
-                        {{ "type": "image", "content": "https://image.url/here.png" }},
-                        {{ "type": "code", "content": "print('hello')" }},
-                        {{ "type": "text", "content": "Paragraph 2 content..." }}
-                    ]
-                }}
-            ]
-        }}
-        """
-
-        # Use the Global Text LLM to structure the content
-        llm_structured_response = llm.invoke(llm_prompt)
-        
-        # Robust JSON extraction
-        json_match_final = re.search(r"\{.*\}", llm_structured_response.content, re.DOTALL)
-        if not json_match_final:
-            raise ValueError(f"LLM did not return valid JSON for content structuring. Raw: {llm_structured_response.content[:500]}")
-        
-        final_structured_data = json.loads(json_match_final.group(0))
-        final_sections = final_structured_data.get("sections", [])
-
-        # Delete existing paragraphs for this chapter before re-inserting
-        supabase.table("paragraphs").delete().eq("chapter_id", chapter_id).execute()
-
-        # Insert final structured content into DB
-        db_order_index = 1
-        for section in final_sections:
-            section_title = section.get("title", "General")
-            for block in section.get("blocks", []):
-                supabase.table("paragraphs").insert({
-                    "chapter_id": chapter_id,
-                    "content": block["content"],
-                    "type": block["type"],
-                    "order_index": db_order_index,
-                    "section_title": section_title,
-                    "is_completed": False
-                }).execute()
-                db_order_index += 1
+                    if is_header:
+                        # Update current section tracker, but save as a paragraph too
+                        current_section = clean_text[:50] # Limit length
+                        
+                        # Optional: Save header as its own block
+                        supabase.table("paragraphs").insert({
+                            "chapter_id": chapter_id, "content": clean_text, "type": "header",
+                            "order_index": global_order_index, "section_title": current_section,
+                            "is_completed": False
+                        }).execute()
+                    else:
+                        # Regular Text
+                        supabase.table("paragraphs").insert({
+                            "chapter_id": chapter_id, "content": clean_text, "type": "text",
+                            "order_index": global_order_index, "section_title": current_section,
+                            "is_completed": False
+                        }).execute()
+                    
+                    global_order_index += 1
 
         print(f"✅ Finished generating Chapter: {chapter.data['title']}")
 
