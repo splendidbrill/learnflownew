@@ -35,11 +35,7 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'; //
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-}
+
 
 interface BookClientProps {
   bookId: string;
@@ -51,6 +47,14 @@ interface Chapter {
   order_index: number;
   start_page_num: number;
   progress?: number;
+}
+
+// --- TYPES ---
+interface Message {
+  id: string;
+  role: 'user' | 'assistant' | 'system'; // Allows system messages for dividers
+  content: string;
+  imageUrl?: string; // Optional field for diagram explanation
 }
 
 interface Paragraph {
@@ -597,6 +601,7 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
 
   const handleExplainDiagram = async (para: Paragraph) => {
     setAnalyzingParaId(para.id);
+    
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/analyze-image`, {
         method: 'POST',
@@ -604,15 +609,29 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
         body: JSON.stringify({
           paragraphId: para.id,
           imageUrl: para.content, 
-          analogyTopic: "Football" // You can fetch user interest from state here
+          analogyTopic: "Football" // Suggestion: Fetch real interest from user state later
         })
       });
       const data = await res.json();
       
-      // Update local state to show explanation immediately
+      // 1. Update the Paragraph Card (Center View)
+      // This shows the blue box below the image in the main reader
       setParagraphs(prev => prev.map(p => 
         p.id === para.id ? { ...p, explanation: data.explanation } : p
       ));
+
+      // 2. Add to Chat Sidebar (Right View) -- NEW
+      // This pushes the explanation + image into the AI Tutor chat
+      setMessages(prev => [
+        ...prev, 
+        { 
+          id: Date.now().toString(), 
+          role: 'assistant', 
+          content: data.explanation,
+          imageUrl: para.content // <--- This triggers the image render in the chat
+        }
+      ]);
+
     } catch (e) {
       console.error(e);
       alert("Failed to analyze image");
@@ -1443,27 +1462,34 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
             </div>
           ) : (
             messages.map((m) => (
-              <div
-                key={m.id}
-                className={`flex ${
-                  m.role === "user" ? "justify-end" : "justify-start"
-                }`}
-              >
-                <div
-                  className={`max-w-[85%] rounded-2xl p-3 text-sm ${
-                    m.role === "user"
-                      ? "bg-purple-600 text-white rounded-br-none"
-                      : m.role === "assistant"
-                      ? "bg-[#1e0a3c] border border-white/10 text-gray-200 rounded-bl-none"
-                      : "w-full text-center text-xs text-gray-500 my-2 border-b border-white/5 leading-[0.1em]" // System/Divider style
-                  }`}
-                >
-                  {m.role === "assistant" ? (
-                    <span className="bg-[#0f0518] px-2">{m.content}</span>
-                  ) : (
-                    m.content
+              <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                
+                {/* --- START OF MESSAGE BUBBLE --- */}
+                <div className={`max-w-[85%] rounded-2xl p-3 text-sm ${
+                  m.role === 'user' 
+                  ? 'bg-purple-600 text-white rounded-br-none' 
+                  : m.role === 'assistant' 
+                    ? 'bg-[#1e0a3c] border border-white/10 text-gray-200 rounded-bl-none'
+                    : 'w-full text-center text-xs text-gray-500 my-2 border-b border-white/5 leading-[0.1em]'
+                }`}>
+                  
+                  {/* 1. IMAGE RENDERER (Paste this here) */}
+                  {m.imageUrl && (
+                    <div className="mb-3 rounded-lg overflow-hidden border border-white/10 shadow-sm">
+                      <img src={m.imageUrl} alt="Diagram Context" className="w-full h-auto object-cover" />
+                    </div>
                   )}
+
+                  {/* 2. TEXT RENDERER */}
+                  {m.role === 'system' ? (
+                     <span className="bg-[#0f0518] px-2">{m.content}</span>
+                  ) : (
+                     <div className="whitespace-pre-wrap">{m.content}</div>
+                  )}
+                  
                 </div>
+                {/* --- END OF MESSAGE BUBBLE --- */}
+
               </div>
             ))
           )}

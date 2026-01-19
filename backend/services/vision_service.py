@@ -1,25 +1,32 @@
 import os
-import httpx
 from huggingface_hub import InferenceClient
 
 # --- CONFIG ---
-# Add this to your .env / Render Environment: HUGGINGFACE_API_KEY
+# Make sure HUGGINGFACE_API_KEY is in your .env and Render Environment
 HF_TOKEN = os.getenv("HUGGINGFACE_API_KEY")
 
-# --- QWEN LOGIC (Hugging Face) ---
-async def try_huggingface_qwen(image_url, prompt):
-    print("🤖 Vision: Calling Qwen-2.5-VL via Hugging Face...")
+async def analyze_diagram(image_url: str, topic: str):
+    print(f"👁️ Analyzing Diagram with Qwen-2.5-VL: {image_url}")
     
     if not HF_TOKEN:
-        print("⚠️ No HUGGINGFACE_API_KEY found.")
-        return None
+        print("❌ Error: HUGGINGFACE_API_KEY is missing.")
+        return "System Error: Vision API key is missing."
+
+    # Prompt Engineering for Qwen
+    prompt = f"""
+    You are a Physics Tutor. 
+    Look at this diagram/image.
+    1. Describe exactly what is visualised (vectors, graphs, machinery).
+    2. Explain the scientific concept shown using a '{topic}' analogy.
+    3. Keep it concise (max 3 sentences).
+    """
 
     try:
         client = InferenceClient(api_key=HF_TOKEN)
         
-        # Qwen-2.5-VL is excellent for OCR and Diagrams
-        # We use the 72B Instruct model (or 7B if 72B is busy)
-        model_id = "Qwen/Qwen2.5-VL-72B-Instruct" 
+        # Qwen 2.5 VL 72B is excellent for OCR and Diagrams
+        # If 72B is busy/slow on free tier, you can try "Qwen/Qwen2.5-VL-7B-Instruct"
+        model_id = "Qwen/Qwen2.5-VL-72B-Instruct"
 
         messages = [
             {
@@ -31,42 +38,16 @@ async def try_huggingface_qwen(image_url, prompt):
             }
         ]
 
-        # Call the API
+        # Call API
         completion = client.chat_completion(
             model=model_id,
             messages=messages,
-            max_tokens=500,
-            temperature=0.1 # Low temperature for factual accuracy
+            max_tokens=300,
+            temperature=0.1
         )
 
         return completion.choices[0].message.content
 
     except Exception as e:
-        print(f"⚠️ Qwen Failed: {e}")
-        return None
-
-# --- MAIN ORCHESTRATOR ---
-async def analyze_diagram(image_url: str, topic: str):
-    """
-    Tries to analyze the diagram using available providers.
-    """
-    prompt = f"""
-    You are a Physics Tutor. 
-    Analyze this diagram image carefully.
-    1. Describe exactly what is shown (vectors, labels, shapes).
-    2. Explain the scientific concept using a '{topic}' analogy.
-    Keep it concise and helpful.
-    """
-
-    # 1. Validate Image URL (Quick Check)
-    if not image_url or "http" not in image_url:
-        return "Invalid image source."
-
-    # 2. Try Qwen (Since you have this key!)
-    explanation = await try_huggingface_qwen(image_url, prompt)
-    if explanation:
-        return explanation
-
-    # (Optional: Add Gemini/GPT-4o fallbacks here later)
-
-    return "I couldn't analyze this image right now. The AI vision service is busy."
+        print(f"❌ Hugging Face Vision Failed: {e}")
+        return "I'm having trouble seeing this diagram right now. The vision service might be busy."

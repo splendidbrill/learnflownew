@@ -532,41 +532,49 @@ async def process_chapter_content(chapter_id: str):
         # Note: start_page from DB is 1-based. fitz is 0-based.
         for page_num in range(start_page - 1, min(end_page - 1, len(doc))):
             page = doc[page_num]
+            
+            # 1. Get all blocks (Text and Images)
             blocks = page.get_text("dict")["blocks"]
             
             for block in blocks:
                 
-                # --- IMAGES ---
+                # --- CASE 1: IMAGE (SNAPSHOT METHOD) ---
                 if block["type"] == 1: 
-                    # Skip tiny decorative images
-                    if block["width"] < 150 or block["height"] < 150: continue
+                    # Filter junk
+                    if block["width"] < 100 or block["height"] < 100: continue
 
                     try:
-                        ext = block["ext"]
-                        image_bytes = block["image"]
-                        filename = f"{book_id}/{chapter_id}_{global_order_index}.{ext}"
+                        # NEW: Instead of block['image'], we take a SNAPSHOT of the area
+                        # This fixes rotation, CMYK colors, and missing vector lines
+                        rect = fitz.Rect(block["bbox"])
+                        
+                        # High-quality zoom (2x) for better OCR/Vision
+                        mat = fitz.Matrix(2, 2) 
+                        pix = page.get_pixmap(matrix=mat, clip=rect)
+                        
+                        # Convert to standard PNG bytes
+                        png_bytes = pix.tobytes("png")
+                        
+                        filename = f"{book_id}/{chapter_id}_{global_order_index}.png"
                         
                         # Upload
                         supabase.storage.from_("book-assets").upload(
-                            path=filename, file=image_bytes,
-                            file_options={"content-type": f"image/{ext}", "upsert": "true"}
+                            path=filename, 
+                            file=png_bytes,
+                            file_options={"content-type": "image/png", "upsert": "true"}
                         )
                         public_url = supabase.storage.from_("book-assets").get_public_url(filename)
                         
-                        # Save
                         supabase.table("paragraphs").insert({
-                            "chapter_id": chapter_id, 
-                            "content": public_url, 
-                            "type": "image",
-                            "order_index": global_order_index, 
-                            "section_title": current_section,
-                            "is_completed": False
+                            "chapter_id": chapter_id, "content": public_url, "type": "image",
+                            "order_index": global_order_index, "section_title": current_section, "is_completed": False
                         }).execute()
                         global_order_index += 1
+                        
                     except Exception as img_err:
-                        print(f"⚠️ Image skip: {img_err}")
+                        print(f"⚠️ Image processing failed: {img_err}")
 
-                # --- TEXT ---
+                # --- CASE 2: TEXT ---
                 elif block["type"] == 0:
                     block_text = ""
                     # Simple heuristic: If font is large (>14pt), it's a Header
