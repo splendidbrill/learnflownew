@@ -15,3 +15,7 @@ langchain-groq
 pymupdf
 pytz
 qstash
+
+google-generativeai
+huggingface_hub
+openai 

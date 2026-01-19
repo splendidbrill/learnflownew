@@ -26,6 +26,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 # NEW: Use Groq instead of Google
 from langchain_groq import ChatGroq 
 
+from services.vision_service import analyze_diagram
+
 from db import supabase 
 
 # Import the new Router
@@ -72,61 +74,26 @@ class ImageAnalysisRequest(BaseModel):
     analogyTopic: str
 
 
+
 @app.post("/api/analyze-image")
 async def analyze_image_endpoint(req: ImageAnalysisRequest):
     print(f"👁️ Analyzing Image for Para: {req.paragraphId}")
 
-    # 1. Check Cache
+    # 1. Check Cache (Don't pay/wait twice)
     existing = supabase.table("paragraphs").select("explanation").eq("id", req.paragraphId).single().execute()
     if existing.data and existing.data.get("explanation"):
         return {"explanation": existing.data["explanation"]}
 
-    # 2. Setup SPECIFIC Vision Model (Llama 3.2 90B Vision)
-    # We create this client ONLY when needed
-    vision_llm = ChatGroq(
-        model="llama-3.2-90b-vision-instruct", # <--- The dedicated Vision model
-        api_key=groq_key,
-        temperature=0.2
-    )
+    # 2. Call the Vision Service (Qwen)
+    explanation = await analyze_diagram(req.imageUrl, req.analogyTopic)
 
-    prompt = f"""
-    You are a Physics Tutor. 
-    Analyze this image. Explain the scientific concept visible here using a '{req.analogyTopic}' analogy.
-    Keep it short, clear, and fun.
-    """
-    
-    try:
-        # Construct Message for Vision
-        msg = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": req.imageUrl
-                        }
-                    }
-                ]
-            }
-        ]
-        
-        # 3. Call the Vision Model
-        response = vision_llm.invoke(msg)
-        explanation = response.content
-
-        # 4. Save to DB
+    # 3. Save to DB (Only if it worked)
+    if "couldn't analyze" not in explanation:
         supabase.table("paragraphs").update({
             "explanation": explanation
         }).eq("id", req.paragraphId).execute()
 
-        return {"explanation": explanation}
-
-    except Exception as e:
-        print(f"Vision Error: {e}")
-        # Detailed error for debugging
-        return {"explanation": f"I couldn't see the diagram clearly. (Error: {str(e)})"}
+    return {"explanation": explanation}
 
 @app.on_event("startup")
 async def set_telegram_webhook():
