@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# --- CHANGED: Use OpenAI Client (works for Azure) instead of Groq ---
+# --- AI & DB IMPORTS ---
 from langchain_openai import ChatOpenAI 
 from langchain_core.messages import HumanMessage, SystemMessage
 from db import supabase 
@@ -23,10 +23,10 @@ load_dotenv(dotenv_path=env_path)
 
 app = FastAPI()
 
-# 2. Setup Middleware & Routers
+# 2. Setup Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://your-frontend-url.vercel.app"], 
+    allow_origins=["http://localhost:3000"], 
     allow_credentials=True,
     allow_methods=["*"], 
     allow_headers=["*"],
@@ -35,16 +35,15 @@ app.add_middleware(
 app.include_router(scheduler.router, prefix="/api")
 app.include_router(stats.router, prefix="/api")
 
-# --- 3. SETUP AZURE LLM (TEXT BRAIN) ---
+# --- 3. SETUP AZURE DEEPSEEK (TEXT BRAIN) ---
 azure_base_url = os.getenv("AZURE_BASE_URL")
 azure_api_key = os.getenv("AZURE_API_KEY")
-text_model_name = os.getenv("AZURE_TEXT_MODEL")
+text_model_name = os.getenv("AZURE_TEXT_MODEL") # e.g. DeepSeek-R1
 
-if not azure_api_key or not azure_base_url:
-    # Print warning but don't crash immediately (helpful for debugging)
+if not azure_api_key:
     print("⚠️ AZURE CREDENTIALS MISSING. Check .env file.")
 
-# Initialize Azure Client
+# Initialize Azure DeepSeek
 try:
     llm = ChatOpenAI(
         model=text_model_name, 
@@ -58,35 +57,10 @@ try:
 except Exception as e:
     print(f"❌ Failed to initialize LLM: {e}")
 
-# --- STARTUP HOOK (TELEGRAM) ---
-@app.on_event("startup")
-async def set_telegram_webhook():
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    app_url = os.getenv("APP_URL") 
-
-    if not bot_token or not app_url:
-        print("⚠️ Skipping Telegram Webhook setup: Missing secrets.")
-        return
-
-    webhook_url = f"{app_url}/api/hooks/telegram"
-    telegram_api = f"https://api.telegram.org/bot{bot_token}/setWebhook"
-
-    print(f"⚙️ Setting Telegram Webhook to: {webhook_url}")
-
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(telegram_api, params={"url": webhook_url})
-            if response.status_code == 200:
-                print("✅ Telegram Webhook set successfully!")
-            else:
-                print(f"❌ Failed to set webhook: {response.text}")
-        except Exception as e:
-            print(f"❌ Error setting webhook: {e}")
-
 # --- HEALTH CHECK ---
 @app.get("/")
 def health_check():
-    return {"status": "active", "message": "LearnFlow Backend is Online 🚀"}
+    return {"status": "active", "message": "Local Backend Online 🏠"}
 
 # --- MODELS ---
 class IngestRequest(BaseModel):
@@ -113,52 +87,39 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/analyze-image")
 async def analyze_image_endpoint(req: ImageAnalysisRequest):
-    print(f"👁️ Analyzing Image for Para: {req.paragraphId}")
-
-    # Check Cache
+    print(f"👁️ Analyzing Image: {req.paragraphId}")
     existing = supabase.table("paragraphs").select("explanation").eq("id", req.paragraphId).single().execute()
     if existing.data and existing.data.get("explanation"):
         return {"explanation": existing.data["explanation"]}
 
-    # Call Vision Service (Uses Azure DeepSeek from vision_service.py)
     explanation = await analyze_diagram(req.imageUrl, req.analogyTopic)
 
-    # Save to DB
     if "couldn't analyze" not in explanation and "Error" not in explanation:
-        supabase.table("paragraphs").update({
-            "explanation": explanation
-        }).eq("id", req.paragraphId).execute()
+        supabase.table("paragraphs").update({"explanation": explanation}).eq("id", req.paragraphId).execute()
 
     return {"explanation": explanation}
 
 @app.post("/chat")
 async def chat_endpoint(req: ChatRequest):
-    print(f"💬 Chat Request for Paragraph: {req.currentParagraphId}")
-
+    # Setup Context
     system_context = "You are a helpful AI Tutor."
-    
     if req.currentParagraphId:
         try:
             para_res = supabase.table("paragraphs").select("content, section_title").eq("id", req.currentParagraphId).single().execute()
-            
             if para_res.data:
                 para_content = para_res.data['content']
                 section_title = para_res.data.get('section_title', 'General Section')
-                interests = ["Football", "Tech"] # Fallback
-
                 system_context = f"""
                 You are an expert AI Tutor.
                 CURRENT FOCUS: {section_title}
                 TEXT: "{para_content}"
-                INTERESTS: {', '.join(interests)}
-                
                 INSTRUCTIONS:
-                1. EXPLAIN: If user says "Start/Yes/Explain", explain text using {interests[0]} analogy. End with: "Any questions, or shall we move on?"
-                2. Q&A: If user asks question, answer based on TEXT.
-                3. MOVEMENT: ONLY if user says "Next/Yes/Ok" (agreeing to move), reply ONLY: "[NEXT]"
+                1. If user says "Start/Yes/Explain", explain text using analogies. End with: "Any questions, or shall we move on?"
+                2. If user asks question, answer based on TEXT.
+                3. ONLY if user says "Next/Yes/Ok" (agreeing to move), reply ONLY: "[NEXT]"
                 """
-        except Exception as e:
-            print(f"⚠️ Error context: {e}")
+        except Exception:
+            pass
 
     langchain_messages = [SystemMessage(content=system_context)]
     for msg in req.messages:
@@ -182,98 +143,72 @@ async def ingest_book(req: IngestRequest, background_tasks: BackgroundTasks):
 
 @app.post("/generate_chapter")
 async def generate_chapter(req: GenerateChapterRequest, background_tasks: BackgroundTasks):
-    print(f"👉 Endpoint hit! Requesting generation for: {req.chapterId}")
+    print(f"👉 Generating Content for: {req.chapterId}")
     background_tasks.add_task(process_chapter_content, req.chapterId)
-    return {"status": "started", "message": "Generating..."}
+    return {"status": "started"}
 
-# --- BACKGROUND WORKERS ---
+# --- WORKERS (Local Processing) ---
 
 async def process_book(book_id: str, file_url: str, interest: str, book_type: str):
-    print(f"🚀 Starting Structure Scan for Book: {book_id}")
-    supabase.table("course_books").update({"status": "processing"}).eq("id", book_id).execute()
-    
+    print(f"🚀 Scanning Book Structure (DeepSeek)...")
     try:
-        # 1. Download PDF
         async with httpx.AsyncClient() as client:
             resp = await client.get(file_url)
             pdf_bytes = resp.content
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
+        # 1. Try Metadata first
+        toc = doc.get_toc() 
         chapters_to_save = []
         offset = 0
-
-        # --- PLAN A: METADATA EXTRACTION ---
-        toc = doc.get_toc() 
         metadata_chapters = [t for t in toc if t[0] == 1]
 
         if len(metadata_chapters) > 3:
-            print(f"⚡ Found {len(metadata_chapters)} chapters via PDF Metadata.")
+            print(f"⚡ Found {len(metadata_chapters)} chapters via Metadata.")
             for t in metadata_chapters:
-                chapters_to_save.append({
-                    "title": t[1],
-                    "start_page": t[2]
-                })
-            offset = 0 
+                chapters_to_save.append({"title": t[1], "start_page": t[2]})
         else:
-            # --- PLAN B: AI EXTRACTION ---
-            print("⚠️ No metadata found. Falling back to AI Scan...")
+            # 2. Fallback to DeepSeek Scan
+            print("⚠️ Metadata failed. Scanning with DeepSeek...")
             toc_text = ""
             for i in range(min(50, len(doc))):
                 toc_text += doc[i].get_text() + "\n"
 
-            print(f"👀 AI Scanning text length: {len(toc_text)} chars")
-
             prompt = f"""
             You are a JSON parser. Extract the Table of Contents.
-            RULES:
-            1. Extract Top-Level Chapters Only.
-            2. IGNORE sub-sections. 
-            3. Return JSON: {{ "chapters": [ {{ "title": "...", "start_page": 5 }} ] }}
-            
+            RULES: Extract Top-Level Chapters Only (e.g. "Chapter 1", "1. Motion"). IGNORE sub-sections.
+            Return JSON: {{ "chapters": [ {{ "title": "...", "start_page": 5 }} ] }}
             TEXT: {toc_text[:60000]}...
             """
-            
             ai_response = llm.invoke(prompt)
             json_match = re.search(r"\{.*\}", ai_response.content, re.DOTALL)
-            
             if json_match:
                 data = json.loads(json_match.group(0))
                 chapters_to_save = data.get("chapters", [])
-                
-                # Calculate Offset
+                # Offset calc logic...
                 if len(chapters_to_save) > 0:
-                    chap1 = chapters_to_save[0]
-                    c_title = chap1['title'].lower().replace("chapter", "").strip().split(" ")[0]
-                    printed = chap1.get('start_page', 1)
-                    
+                    c_title = chapters_to_save[0]['title'].lower().split(" ")[0]
+                    printed = chapters_to_save[0].get('start_page', 1)
                     for i in range(min(60, len(doc))):
                         if c_title in doc[i].get_text().lower():
                             if "contents" in doc[i].get_text().lower(): continue
                             offset = i - (printed - 1)
-                            print(f"🎯 AI Offset: {offset}")
                             break
 
-        # Save Results
         if not chapters_to_save:
             print("❌ No chapters found.")
             supabase.table("course_books").update({"status": "failed"}).eq("id", book_id).execute()
             return
 
         supabase.table("chapters").delete().eq("book_id", book_id).execute()
-        
         for i, chap in enumerate(chapters_to_save):
-            raw_page = chap.get('start_page', 0)
-            final_page = raw_page + offset
-            
             supabase.table("chapters").insert({
-                "book_id": book_id,
-                "title": chap['title'],
-                "order_index": i + 1,
-                "start_page_num": final_page
+                "book_id": book_id, "title": chap['title'],
+                "order_index": i + 1, "start_page_num": chap.get('start_page', 0) + offset
             }).execute()
 
         supabase.table("course_books").update({"status": "completed"}).eq("id", book_id).execute()
-        print(f"✅ Scan Complete. Saved {len(chapters_to_save)} chapters.")
+        print("✅ Scan Complete.")
 
     except Exception as e:
         print(f"❌ Error: {str(e)}")
@@ -283,7 +218,7 @@ async def process_chapter_content(chapter_id: str):
     print(f"⚡ Processing Chapter: {chapter_id}")
     
     try:
-        # 1. Fetch Info & Download PDF (Same as before)
+        # 1. Setup
         chapter = supabase.table("chapters").select("*").eq("id", chapter_id).single().execute()
         book_id = chapter.data['book_id']
         start_page = chapter.data['start_page_num']
@@ -294,7 +229,7 @@ async def process_chapter_content(chapter_id: str):
             pdf_bytes = resp.content
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
-        # Determine End Page
+        # End Page Logic
         next_chap = supabase.table("chapters").select("start_page_num").eq("book_id", book_id).gt("order_index", chapter.data['order_index']).order("order_index").limit(1).execute()
         if next_chap.data:
             end_page = next_chap.data[0]['start_page_num']
@@ -306,7 +241,6 @@ async def process_chapter_content(chapter_id: str):
 
         print(f"📖 Reading pages {start_page} to {end_page}")
 
-        # Cleanup
         supabase.table("paragraphs").delete().eq("chapter_id", chapter_id).execute()
 
         global_order_index = 1
@@ -320,14 +254,15 @@ async def process_chapter_content(chapter_id: str):
 
         for page_num in range(start_idx, end_idx):
             page = doc[page_num]
+            page_width = page.rect.width
+            page_height = page.rect.height
             
-            # --- LIST TO HOLD ALL ITEMS ON THIS PAGE (Text + Images) ---
-            page_items = [] 
-
-            # A. EXTRACT TEXT BLOCKS
+            # Use 'dict' for text structure
             text_blocks = page.get_text("dict")["blocks"]
+            
+            # --- 1. PROCESS TEXT FIRST ---
             for block in text_blocks:
-                if block["type"] == 0: # Text
+                if block["type"] == 0:
                     block_text = ""
                     is_header = False
                     for line in block["lines"]:
@@ -335,95 +270,79 @@ async def process_chapter_content(chapter_id: str):
                             block_text += span["text"] + " "
                             if span["size"] > 14: is_header = True
                     
-                    clean_text = block_text.strip()
-                    # Filter junk text
-                    if not clean_text or len(clean_text) < 3: continue 
+                    clean = block_text.strip()
+                    if len(clean) > 3:
+                        if is_header: current_section = clean[:50]
+                        paragraphs_to_insert.append({
+                            "chapter_id": chapter_id, "content": clean, 
+                            "type": "header" if is_header else "text",
+                            "order_index": global_order_index, "section_title": current_section, "is_completed": False
+                        })
+                        global_order_index += 1
 
-                    page_items.append({
-                        "y": block["bbox"][1], # Vertical position
-                        "type": "header" if is_header else "text",
-                        "content": clean_text
-                    })
-
-            # B. EXTRACT RAW IMAGES (Surgical Extraction)
+            # --- 2. PROCESS IMAGES (SNAPSHOT METHOD) ---
+            # We look for image locations
             image_list = page.get_images(full=True)
             
-            for img_index, img in enumerate(image_list):
+            for img_idx, img in enumerate(image_list):
                 xref = img[0]
                 
-                # 1. Get Location of this image on the page
-                # This tells us WHERE the image is, without taking a screenshot of the text
                 try:
+                    # Get the rectangle where the image is drawn
                     rects = page.get_image_rects(xref)
                     if not rects: continue
-                    bbox = rects[0] # Use the first occurrence
-                except:
-                    continue
+                    bbox = rects[0] # Use first occurrence
+                    
+                    width = bbox.width
+                    height = bbox.height
 
-                width, height = bbox.width, bbox.height
+                    # --- FILTERING (Crucial) ---
+                    # 1. Skip Tiny Icons
+                    if width < 150 or height < 150: continue
+                    
+                    # 2. Skip "Whole Page" Backgrounds
+                    # If image is > 90% of page size, it's likely a watermark or background color
+                    if (width * height) > (page_width * page_height * 0.90): 
+                        continue
 
-                # 2. STRICT FILTERING (Removes the "Q" and tiny icons)
-                # Must be at least 200x200 to be considered a diagram
-                if width < 200 or height < 200: continue
-                
-                # Filter full-page backgrounds (if > 90% of page)
-                if (width * height) > (page.rect.width * page.rect.height * 0.95): continue
+                    # --- SNAPSHOT & COLOR FIX ---
+                    # Matrix 2.0 = High Res
+                    mat = fitz.Matrix(2.0, 2.0)
+                    pix = page.get_pixmap(matrix=mat, clip=bbox)
 
-                try:
-                    # 3. Extract the RAW Image (No text overlap!)
-                    base_image = doc.extract_image(xref)
-                    image_bytes = base_image["image"]
-                    ext = base_image["ext"]
-                    
-                    # Convert to Pixmap to ensure RGB (Fixes black/inverted colors)
-                    # We create a pixmap from the raw bytes
-                    pix = fitz.Pixmap(image_bytes)
-                    
-                    # If CMYK or weird colorspace, convert to RGB
-                    if pix.n - pix.alpha < 3:
-                        pix = fitz.Pixmap(fitz.csRGB, pix)
-                    
-                    final_bytes = pix.tobytes("png")
-                    
-                    filename = f"{book_id}/{chapter_id}_{page_num}_{img_index}.png"
+                    # FORCE WHITE BACKGROUND (Fixes Black Transparent Images)
+                    if pix.alpha:
+                        pix_white = fitz.Pixmap(fitz.csRGB, pix.width, pix.height)
+                        pix_white.clearWith(255, 255, 255) # Fill White
+                        pix_white.set_origin(pix.x, pix.y)
+                        pix_white.copy(pix, pix.rect) # Overlay image
+                        pix = pix_white
+
+                    png_bytes = pix.tobytes("png")
                     
                     # Upload
+                    filename = f"{book_id}/{chapter_id}_{page_num}_{img_idx}.png"
                     supabase.storage.from_("book-assets").upload(
-                        path=filename, file=final_bytes,
+                        path=filename, file=png_bytes,
                         file_options={"content-type": "image/png", "upsert": "true"}
                     )
                     public_url = supabase.storage.from_("book-assets").get_public_url(filename)
                     
-                    page_items.append({
-                        "y": bbox.y0, # Vertical position
-                        "type": "image",
-                        "content": public_url
+                    paragraphs_to_insert.append({
+                        "chapter_id": chapter_id, "content": public_url, "type": "image",
+                        "order_index": global_order_index, "section_title": current_section, "is_completed": False
                     })
-                    
-                except Exception as img_err:
-                    print(f"⚠️ Image extraction failed: {img_err}")
+                    global_order_index += 1
 
-            # C. SORT & PREPARE FOR DB
-            # Sort everything by vertical position (Top to Bottom)
-            page_items.sort(key=lambda x: x["y"])
+                except Exception as e:
+                    print(f"⚠️ Image skip: {e}")
 
-            for item in page_items:
-                # Update Section Title if we hit a header
-                if item["type"] == "header":
-                    current_section = item["content"][:50]
-
-                paragraphs_to_insert.append({
-                    "chapter_id": chapter_id, 
-                    "content": item["content"], 
-                    "type": item["type"],
-                    "order_index": global_order_index, 
-                    "section_title": current_section,
-                    "is_completed": False
-                })
-                global_order_index += 1
-
-        # 4. Batch Insert
+        # 4. Save
         if paragraphs_to_insert:
+            # Sort by sequence (Images might be processed after text on same page, 
+            # ideally we sort by Y-coordinate but sequence is acceptable for MVP)
+            # To be safer, we could collect all (text+img) with Y-pos and sort.
+            
             print(f"💾 Saving {len(paragraphs_to_insert)} items...")
             chunk_size = 100
             for i in range(0, len(paragraphs_to_insert), chunk_size):
@@ -432,7 +351,7 @@ async def process_chapter_content(chapter_id: str):
         print(f"✅ Generated Chapter: {chapter.data['title']}")
 
     except Exception as e:
-        print(f"❌ Error generating chapter: {str(e)}")
+        print(f"❌ Error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
