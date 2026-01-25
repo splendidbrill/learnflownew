@@ -283,80 +283,51 @@ async def process_chapter_content(chapter_id: str):
     print(f"⚡ Processing Chapter: {chapter_id}")
     
     try:
-        # Fetch Info
+        # 1. Fetch Info & Download PDF (Same as before)
         chapter = supabase.table("chapters").select("*").eq("id", chapter_id).single().execute()
         book_id = chapter.data['book_id']
         start_page = chapter.data['start_page_num']
         
         book = supabase.table("course_books").select("file_url").eq("id", book_id).single().execute()
-        file_url = book.data['file_url']
-
-        next_chap = supabase.table("chapters").select("start_page_num").eq("book_id", book_id).gt("order_index", chapter.data['order_index']).order("order_index").limit(1).execute()
-        
         async with httpx.AsyncClient() as client:
-            resp = await client.get(file_url)
+            resp = await client.get(book.data['file_url'])
             pdf_bytes = resp.content
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
+        # Determine End Page
+        next_chap = supabase.table("chapters").select("start_page_num").eq("book_id", book_id).gt("order_index", chapter.data['order_index']).order("order_index").limit(1).execute()
         if next_chap.data:
             end_page = next_chap.data[0]['start_page_num']
         else:
             end_page = len(doc)
 
-        if (end_page - start_page) > 30: 
-            print(f"⚠️ Limit 30 pages.")
-            end_page = start_page + 30
-        
+        if (end_page - start_page) > 30: end_page = start_page + 30
         if end_page <= start_page: end_page = start_page + 1
 
         print(f"📖 Reading pages {start_page} to {end_page}")
 
+        # Cleanup
         supabase.table("paragraphs").delete().eq("chapter_id", chapter_id).execute()
 
         global_order_index = 1
         current_section = "General"
         paragraphs_to_insert = []
 
-        # Iterate Pages
+        # 3. Iterate Pages
         start_idx = start_page - 1
         end_idx = end_page - 1
         if end_idx > len(doc): end_idx = len(doc)
 
         for page_num in range(start_idx, end_idx):
             page = doc[page_num]
-            page_rect = page.rect
-            blocks = page.get_text("dict")["blocks"]
             
-            for block in blocks:
-                # --- IMAGES ---
-                if block["type"] == 1: 
-                    bbox = fitz.Rect(block["bbox"])
-                    width, height = bbox.width, bbox.height
+            # --- LIST TO HOLD ALL ITEMS ON THIS PAGE (Text + Images) ---
+            page_items = [] 
 
-                    if width < 150 or height < 150: continue
-                    if (width * height) > (page_rect.width * page_rect.height * 0.9): continue
-
-                    try:
-                        mat = fitz.Matrix(1.5, 1.5) 
-                        pix = page.get_pixmap(matrix=mat, clip=bbox)
-                        
-                        filename = f"{book_id}/{chapter_id}_{global_order_index}.png"
-                        supabase.storage.from_("book-assets").upload(
-                            path=filename, file=pix.tobytes("png"),
-                            file_options={"content-type": "image/png", "upsert": "true"}
-                        )
-                        public_url = supabase.storage.from_("book-assets").get_public_url(filename)
-                        
-                        paragraphs_to_insert.append({
-                            "chapter_id": chapter_id, "content": public_url, "type": "image",
-                            "order_index": global_order_index, "section_title": current_section, "is_completed": False
-                        })
-                        global_order_index += 1
-                    except Exception as img_err:
-                        print(f"⚠️ Image skip: {img_err}")
-
-                # --- TEXT ---
-                elif block["type"] == 0:
+            # A. EXTRACT TEXT BLOCKS
+            text_blocks = page.get_text("dict")["blocks"]
+            for block in text_blocks:
+                if block["type"] == 0: # Text
                     block_text = ""
                     is_header = False
                     for line in block["lines"]:
@@ -365,17 +336,93 @@ async def process_chapter_content(chapter_id: str):
                             if span["size"] > 14: is_header = True
                     
                     clean_text = block_text.strip()
-                    if not clean_text: continue
+                    # Filter junk text
+                    if not clean_text or len(clean_text) < 3: continue 
 
-                    if is_header: current_section = clean_text[:50]
-                    
-                    paragraphs_to_insert.append({
-                        "chapter_id": chapter_id, "content": clean_text, 
+                    page_items.append({
+                        "y": block["bbox"][1], # Vertical position
                         "type": "header" if is_header else "text",
-                        "order_index": global_order_index, "section_title": current_section, "is_completed": False
+                        "content": clean_text
                     })
-                    global_order_index += 1
 
+            # B. EXTRACT RAW IMAGES (Surgical Extraction)
+            image_list = page.get_images(full=True)
+            
+            for img_index, img in enumerate(image_list):
+                xref = img[0]
+                
+                # 1. Get Location of this image on the page
+                # This tells us WHERE the image is, without taking a screenshot of the text
+                try:
+                    rects = page.get_image_rects(xref)
+                    if not rects: continue
+                    bbox = rects[0] # Use the first occurrence
+                except:
+                    continue
+
+                width, height = bbox.width, bbox.height
+
+                # 2. STRICT FILTERING (Removes the "Q" and tiny icons)
+                # Must be at least 200x200 to be considered a diagram
+                if width < 200 or height < 200: continue
+                
+                # Filter full-page backgrounds (if > 90% of page)
+                if (width * height) > (page.rect.width * page.rect.height * 0.95): continue
+
+                try:
+                    # 3. Extract the RAW Image (No text overlap!)
+                    base_image = doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    ext = base_image["ext"]
+                    
+                    # Convert to Pixmap to ensure RGB (Fixes black/inverted colors)
+                    # We create a pixmap from the raw bytes
+                    pix = fitz.Pixmap(image_bytes)
+                    
+                    # If CMYK or weird colorspace, convert to RGB
+                    if pix.n - pix.alpha < 3:
+                        pix = fitz.Pixmap(fitz.csRGB, pix)
+                    
+                    final_bytes = pix.tobytes("png")
+                    
+                    filename = f"{book_id}/{chapter_id}_{page_num}_{img_index}.png"
+                    
+                    # Upload
+                    supabase.storage.from_("book-assets").upload(
+                        path=filename, file=final_bytes,
+                        file_options={"content-type": "image/png", "upsert": "true"}
+                    )
+                    public_url = supabase.storage.from_("book-assets").get_public_url(filename)
+                    
+                    page_items.append({
+                        "y": bbox.y0, # Vertical position
+                        "type": "image",
+                        "content": public_url
+                    })
+                    
+                except Exception as img_err:
+                    print(f"⚠️ Image extraction failed: {img_err}")
+
+            # C. SORT & PREPARE FOR DB
+            # Sort everything by vertical position (Top to Bottom)
+            page_items.sort(key=lambda x: x["y"])
+
+            for item in page_items:
+                # Update Section Title if we hit a header
+                if item["type"] == "header":
+                    current_section = item["content"][:50]
+
+                paragraphs_to_insert.append({
+                    "chapter_id": chapter_id, 
+                    "content": item["content"], 
+                    "type": item["type"],
+                    "order_index": global_order_index, 
+                    "section_title": current_section,
+                    "is_completed": False
+                })
+                global_order_index += 1
+
+        # 4. Batch Insert
         if paragraphs_to_insert:
             print(f"💾 Saving {len(paragraphs_to_insert)} items...")
             chunk_size = 100
