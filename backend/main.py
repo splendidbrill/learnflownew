@@ -162,28 +162,54 @@ async def analyze_image_endpoint(req: ImageAnalysisRequest):
     return {"explanation": explanation}
 
 # 💬 C. CHAT & PROGRESS
+# Replace the existing /chat endpoint in main.py
+
 @app.post("/chat")
 async def chat_endpoint(req: ChatRequest):
     system_context = "You are a helpful AI Tutor."
     
+    # 1. Fetch Book-Specific Interest from DB
+    user_interest = "general" # Default
+    try:
+        if req.bookId:
+            book_res = supabase.table("course_books").select("analogy_topic").eq("id", req.bookId).single().execute()
+            if book_res.data and book_res.data.get('analogy_topic'):
+                fetched = book_res.data['analogy_topic'].strip()
+                if fetched: user_interest = fetched
+    except Exception as e:
+        print(f"⚠️ Could not fetch book interest: {e}")
+
+    print(f"💬 Chat Context: {user_interest}") # Debug print to console
+
+    # 2. Build Context based on Paragraph
     if req.currentParagraphId:
         try:
             para_res = supabase.table("paragraphs").select("content, section_title").eq("id", req.currentParagraphId).single().execute()
+            
             if para_res.data:
                 para_content = para_res.data['content']
                 section_title = para_res.data.get('section_title', 'General Section')
                 
+                # --- STRONGER PROMPT ---
                 system_context = f"""
                 You are an expert AI Tutor.
-                CURRENT FOCUS: {section_title}
-                TEXT: "{para_content}"
+                
+                CURRENT CONTEXT:
+                - Section: {section_title}
+                - Content: "{para_content}"
+                - Student's Interest: **{user_interest}** (STRICTLY USE THIS)
                 
                 INSTRUCTIONS:
-                1. EXPLAIN: Use simple analogies.
-                2. MOVEMENT: If user says "Next" or "Got it", reply ONLY: "[NEXT]"
+                1. Explain the content clearly.
+                2. **MANDATORY**: You MUST use an analogy related to '{user_interest}'. 
+                   - If '{user_interest}' is Cooking -> Use recipes, ingredients, chefs, kitchen.
+                   - If '{user_interest}' is Football -> Use goals, players, matches.
+                3. If the user says "Next" or "Got it", reply ONLY: "[NEXT]"
                 """
-        except Exception: pass
+        except Exception as e: 
+            print(f"⚠️ Paragraph Context Error: {e}")
 
+    # 3. Stream Response
     langchain_messages = [SystemMessage(content=system_context)]
     for msg in req.messages:
         if msg.get('role') == 'user':
@@ -197,15 +223,9 @@ async def chat_endpoint(req: ChatRequest):
                 full_response += content
                 yield content
             
-            # Progress Tracking
             if "[NEXT]" in full_response:
-                supabase.table("user_progress").upsert({
-                    "user_id": req.userId,
-                    "book_id": req.bookId,
-                    "current_block_id": req.currentParagraphId,
-                    "is_completed": True,
-                    "updated_at": "now()"
-                }).execute()
+                # We handle the DB update in the frontend now, but keeping this as backup log is fine
+                print(f"👉 AI signaled NEXT")
         except Exception as e:
             yield f"Error: {str(e)}"
 

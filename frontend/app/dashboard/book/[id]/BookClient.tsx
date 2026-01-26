@@ -120,18 +120,21 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
     if (profile) setUserXp(profile.xp || 0);
 
     // 2. Calculate Progress
+    // Total blocks in book
     const { count: total } = await supabase
       .from('paragraphs')
       .select('*', { count: 'exact', head: true })
       .eq('book_id', bookId);
 
+    // Completed blocks by USER
     const { count: completed } = await supabase
       .from('user_progress')
       .select('*', { count: 'exact', head: true })
       .eq('book_id', bookId)
+      .eq('user_id', user.id) // <--- CRITICAL: Filter by User
       .eq('is_completed', true);
 
-    if (total && total > 0 && completed) {
+    if (total && total > 0 && completed !== null) {
       setBookProgress(Math.round((completed / total) * 100));
     }
   };
@@ -383,23 +386,47 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
     }
   };
 
-  const handleNextParagraph = async () => {
-    if (!activeParagraphId) return;
-    
-    await supabase.from("paragraphs").update({ is_completed: true }).eq("id", activeParagraphId);
-    
-    setParagraphs((prev) => prev.map((p) => p.id === activeParagraphId ? { ...p, is_completed: true } : p));
-    fetchStats(); 
+ // Find this function in BookClient.tsx and REPLACE it entirely
+const handleNextParagraph = async () => {
+    if (!activeParagraphId || !user?.id) return;
 
-    const currentIndex = paragraphs.findIndex((p) => p.id === activeParagraphId);
-    const nextPara = paragraphs[currentIndex + 1];
+    try {
+      // 1. Mark as Complete in USER_PROGRESS (Not paragraphs table)
+      const { error } = await supabase.from("user_progress").upsert({
+        user_id: user.id,
+        book_id: bookId,
+        current_block_id: activeParagraphId,
+        is_completed: true,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'user_id, book_id, current_block_id' });
 
-    if (nextPara) {
-      setActiveParagraphId(nextPara.id);
-      triggerExplanation(nextPara.id);
-    } else {
-      setActiveParagraphId(null);
-      setMessages(prev => [...prev, {id: Date.now().toString(), role: 'assistant', content: "🎉 Chapter completed!"}]);
+      if (error) throw error;
+
+      // 2. Increment XP (Add 10 XP per paragraph)
+      const newXp = (userXp || 0) + 10;
+      setUserXp(newXp); // Optimistic UI update
+      await supabase.from("profiles").update({ xp: newXp }).eq("id", user.id);
+
+      // 3. Update Local State to show checkmark
+      setParagraphs((prev) => prev.map((p) => p.id === activeParagraphId ? { ...p, is_completed: true } : p));
+      
+      // 4. Update Progress Bar
+      fetchStats(); 
+
+      // 5. Move to Next
+      const currentIndex = paragraphs.findIndex((p) => p.id === activeParagraphId);
+      const nextPara = paragraphs[currentIndex + 1];
+
+      if (nextPara) {
+        setActiveParagraphId(nextPara.id);
+        triggerExplanation(nextPara.id);
+      } else {
+        setActiveParagraphId(null);
+        setMessages(prev => [...prev, {id: Date.now().toString(), role: 'assistant', content: "🎉 Chapter completed! +10 XP"}]);
+      }
+
+    } catch (err) {
+      console.error("Progress Error:", err);
     }
   };
 
