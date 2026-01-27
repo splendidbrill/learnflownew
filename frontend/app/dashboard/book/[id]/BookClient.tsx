@@ -1,7 +1,9 @@
 "use client";
 
 import React, { useEffect, useState, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense } from "react"; 
+
+import { useRouter, useSearchParams } from "next/navigation"; // <--- Add useSearchParams
 import {
   Menu,
   X,
@@ -67,8 +69,18 @@ interface Book {
   status: "pending" | "processing" | "completed" | "failed";
 }
 
-export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
+export const BookClient: React.FC<BookClientProps> = (props) => {
+  return (
+    <Suspense fallback={<div className="h-screen bg-[#13002b] text-white flex items-center justify-center">Loading...</div>}>
+      <BookClientContent {...props} />
+    </Suspense>
+  );
+};
+
+
+export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   const router = useRouter();
+    const searchParams = useSearchParams();
   const supabase = createClient();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -101,6 +113,10 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
   const [scheduleMode, setScheduleMode] = useState<"create" | "edit">("create");
   const [user, setUser] = useState<any>(null);
   const [analyzingParaId, setAnalyzingParaId] = useState<string | null>(null);
+  // ... existing state ...
+  // Resizable Sidebar State
+  const [chatWidth, setChatWidth] = useState(400); // Default width
+  const [isResizing, setIsResizing] = useState(false);
 
   // --- INITIALIZATION ---
 
@@ -109,39 +125,61 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
     fetchStats();
   }, []);
 
-  const fetchStats = async () => {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return;
+// REPLACE your existing fetchStats with this version
+  const fetchStats = async (currentUserId?: string) => {
+    // 1. Determine User ID (Argument > State > Auth Check)
+    let uid = currentUserId;
+    if (!uid) {
+        const { data } = await supabase.auth.getUser();
+        uid = data.user?.id;
+    }
 
-    // 1. Get XP
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("xp")
-      .eq("id", user.id)
-      .single();
-    if (profile) setUserXp(profile.xp || 0);
+    if (!uid) {
+        console.log("⚠️ Stats skipped: No User ID");
+        return;
+    }
 
-    // 2. Calculate Progress
-    // Total blocks in book
-    const { count: total } = await supabase
-      .from("paragraphs")
-      .select("*", { count: "exact", head: true })
-      .eq("book_id", bookId);
+    console.log("📊 Fetching stats for:", uid);
 
-    // Completed blocks by USER
-    const { count: completed } = await supabase
-      .from("user_progress")
-      .select("*", { count: "exact", head: true })
-      .eq("book_id", bookId)
-      .eq("user_id", user.id) // <--- CRITICAL: Filter by User
-      .eq("is_completed", true);
+    try {
+        // 2. Count TOTAL Paragraphs
+        const { count: total, error: err1 } = await supabase
+          .from('paragraphs')
+          .select('*', { count: 'exact', head: true })
+          .eq('book_id', bookId);
 
-    if (total && total > 0 && completed !== null) {
-      setBookProgress(Math.round((completed / total) * 100));
+        if (err1) throw err1;
+
+        // 3. Count COMPLETED (Using explicit User ID)
+        const { count: completed, error: err2 } = await supabase
+          .from('user_progress')
+          .select('*', { count: 'exact', head: true })
+          .eq('book_id', bookId)
+          .eq('user_id', uid) // <--- Use the variable, not state
+          .eq('is_completed', true);
+
+        if (err2) throw err2;
+
+        // 4. Update State
+        if (total && total > 0) {
+          const percent = Math.round(((completed || 0) / total) * 100);
+          console.log(`📈 Progress: ${percent}% (${completed}/${total})`);
+          setBookProgress(percent);
+        }
+    } catch (error) {
+        console.error("❌ Stats Calculation Failed:", error);
     }
   };
+
+  useEffect(() => {
+  const chapterIdFromUrl = searchParams.get('chapterId');
+  console.log("URL PARAM:", chapterIdFromUrl); // <--- CHECK THIS LOG
+  
+  if (chapters.length > 0 && chapterIdFromUrl && !selectedChapter) {
+    const match = chapters.find(c => c.id === chapterIdFromUrl);
+    if (match) setSelectedChapter(match);
+  }
+}, [chapters, searchParams, selectedChapter]);
 
   const fetchBookData = async () => {
     if (!bookId) return;
@@ -196,30 +234,166 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
     loadParagraphs();
   }, [selectedChapter]);
 
+    useEffect(() => {
+    // 1. Get the session immediately
+    supabase.auth.getUser().then(({ data }) => {
+      if (data.user) {
+        setUser(data.user);
+        // 2. ONLY fetch stats once we have the user
+        fetchStatsForUser(data.user.id);
+         fetchStats(data.user.id);
+      }
+    });
+  }, []);
+
   // Load Chat History
+  // Find your chat loading useEffect
   useEffect(() => {
     const loadChatHistory = async () => {
-      if (!selectedChapter) return;
-      const { data } = await supabase
+      // --- ADD THIS STRICT CHECK ---
+      if (!selectedChapter?.id) {
+        console.log("⏳ Waiting for chapter selection...");
+        return;
+      }
+
+      console.log("✅ Loading Chat for:", selectedChapter.id);
+
+      const { data, error } = await supabase
         .from("chat_logs")
         .select("*")
         .eq("chapter_id", selectedChapter.id)
         .order("created_at", { ascending: true });
 
-      if (data) {
+      if (error) {
+        console.error("Chat Load Error:", error);
+      } else if (data) {
         setMessages(
           data.map((m) => ({
             id: m.id,
             role: m.role as any,
             content: m.content,
-          })),
+          }))
         );
-      } else {
-        setMessages([]);
       }
     };
+
     loadChatHistory();
-  }, [selectedChapter]);
+  }, [selectedChapter]); // <--- Dependency is correct
+
+  // Helper: Decides if a paragraph is "Real Content" or just "Noise"
+// Helper: Decides if a paragraph is "Real Content" or just "Noise"
+const isContentWorthExplaining = (text: string, type?: string) => {
+  // Always explain images/code
+  if (type === 'image' || type === 'code') return true;
+  
+  const cleanText = text.trim();
+  
+  // 1. Catches "Activity ______ 5.2" (Any amount of underscores)
+  if (/^Activity\s*[_\.]+\s*\d+/i.test(cleanText)) return false;
+  
+  // 2. Catches "Fig. 6.3" or "Figure 6.3"
+  if (/^Fig|^Figure|^Table|^Source/i.test(cleanText)) return false;
+
+  // 3. Catches "(a) (b)" or simple labels
+  if (/^(\([a-z]\)\s*)+$/i.test(cleanText)) return false;
+
+  // 4. Catches pure numbers or very short labels
+  if (cleanText.length < 20) return false;
+
+  return true; 
+};
+
+// Handle Resizing Logic
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing) return;
+      
+      // Calculate new width (Window Width - Mouse X Position)
+      const newWidth = window.innerWidth - e.clientX;
+      
+      // Constraints: Min 300px, Max 800px
+      if (newWidth > 300 && newWidth < 800) {
+        setChatWidth(newWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+      document.body.style.cursor = 'default'; // Reset cursor
+    };
+
+    if (isResizing) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'col-resize'; // Force cursor while dragging
+      document.body.style.userSelect = 'none';   // Prevent text selection while dragging
+    }
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'default';
+      document.body.style.userSelect = 'auto';
+    };
+  }, [isResizing]);
+
+  useEffect(() => {
+    const chapterIdFromUrl = searchParams.get('chapterId');
+    
+    // Only run if we have chapters loaded and a URL param exists, but no chapter selected yet
+    if (chapters.length > 0 && chapterIdFromUrl && !selectedChapter) {
+      console.log("🔗 Restoring Chapter from URL:", chapterIdFromUrl);
+      const match = chapters.find(c => c.id === chapterIdFromUrl);
+      if (match) {
+        setSelectedChapter(match);
+      }
+    }
+  }, [chapters, searchParams, selectedChapter]);
+
+   const fetchStatsForUser = async (userId: string) => {
+    // 1. Get XP
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('xp')
+      .eq('id', userId)
+      .single();
+      
+    if (profile) {
+      console.log("✅ XP Loaded:", profile.xp);
+      setUserXp(profile.xp || 0);
+    } else {
+      console.log("⚠️ No Profile found for XP");
+    }
+
+    // 2. Get Progress
+    const { count: total } = await supabase
+      .from('paragraphs')
+      .select('*', { count: 'exact', head: true })
+      .eq('book_id', bookId);
+
+    const { count: completed } = await supabase
+      .from('user_progress')
+      .select('*', { count: 'exact', head: true })
+      .eq('book_id', bookId)
+      .eq('user_id', userId)
+      .eq('is_completed', true);
+
+    if (total && total > 0) {
+      setBookProgress(Math.round(((completed || 0) / total) * 100));
+    }
+  };
+
+   useEffect(() => {
+    const chapterIdFromUrl = searchParams.get('chapterId');
+    
+    // Only run if we have chapters loaded and a URL param exists
+    if (chapters.length > 0 && chapterIdFromUrl) {
+      const match = chapters.find(c => c.id === chapterIdFromUrl);
+      if (match) {
+        setSelectedChapter(match);
+      }
+    }
+  }, [chapters, searchParams]);
 
   // --- HANDLERS ---
 
@@ -406,6 +580,21 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
           content: accumulatedText,
         });
       }
+      if (accumulatedText.trim()) {
+        // Force get user again to be safe
+        const { data: { user: currentUser } } = await supabase.auth.getUser();
+        
+        if (currentUser?.id) {
+            const { error } = await supabase.from("chat_logs").insert({
+              chapter_id: selectedChapter!.id,
+              user_id: currentUser.id,
+              role: "assistant",
+              content: accumulatedText,
+            });
+            if (error) console.error("❌ Chat Save Failed:", error);
+            else console.log("✅ Chat Saved");
+        }
+      }
     } catch (error) {
       console.error(error);
     } finally {
@@ -417,72 +606,105 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
   const handleNextParagraph = async () => {
     if (!activeParagraphId || !user?.id) return;
 
-    // --- 1. OPTIMISTIC UI UPDATES (Immediate Feedback) ---
-
-    // Mark current paragraph as completed in local state
-    setParagraphs((prev) =>
-      prev.map((p) =>
-        p.id === activeParagraphId ? { ...p, is_completed: true } : p,
-      ),
+    // 1. Current Paragraph Cleanup
+    // (Mark current as done in UI)
+    setParagraphs((prev) => 
+      prev.map((p) => p.id === activeParagraphId ? { ...p, is_completed: true } : p)
     );
 
-    // Increment XP locally
-    const newXp = (userXp || 0) + 10;
-    setUserXp(newXp);
+    // 2. Find the NEXT SUBSTANTIVE Paragraph
+    const currentIndex = paragraphs.findIndex((p) => p.id === activeParagraphId);
+    let nextIndex = currentIndex + 1;
+    let nextPara = paragraphs[nextIndex];
 
-    // Find the next paragraph index
-    const currentIndex = paragraphs.findIndex(
-      (p) => p.id === activeParagraphId,
-    );
-    const nextPara = paragraphs[currentIndex + 1];
+    // --- SMART SKIP LOOP ---
+    // While there is a next paragraph AND it is "Noise"
+    while (nextPara && !isContentWorthExplaining(nextPara.content, nextPara.type)) {
+      console.log(`Skipping noise: ${nextPara.content.substring(0, 20)}...`);
+      
+      // Mark noise as completed in DB immediately (Background)
+      supabase.from("user_progress").upsert({
+        user_id: user.id,
+        book_id: bookId,
+        current_block_id: nextPara.id,
+        is_completed: true,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'user_id, book_id, current_block_id' }).then(); // .then() to fire-and-forget
 
-    // --- 2. DATABASE UPDATES (Background) ---
-    try {
-      // Save progress to 'user_progress' table
-      await supabase.from("user_progress").upsert(
-        {
-          user_id: user.id,
-          book_id: bookId,
-          current_block_id: activeParagraphId,
-          is_completed: true,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "user_id, book_id, current_block_id" },
+      // Update Local State for the skipped item
+      setParagraphs((prev) => 
+        prev.map((p) => p.id === nextPara.id ? { ...p, is_completed: true } : p)
       );
 
-      // Save XP to 'profiles' table
-      await supabase.from("profiles").update({ xp: newXp }).eq("id", user.id);
-
-      // Refresh Stats Bar calculations
-      fetchStats();
-    } catch (e) {
-      console.error("Save failed:", e);
+      // Move to next
+      nextIndex++;
+      nextPara = paragraphs[nextIndex];
     }
+    // -----------------------
 
-    // --- 3. NAVIGATION & SCROLLING ---
+    // 3. Handle the Destination (The Real Paragraph)
     if (nextPara) {
-      setActiveParagraphId(nextPara.id); // Move Highlight
-
-      // SCROLL TO NEXT PARAGRAPH
+      saveProgressToDb(activeParagraphId);
+      setActiveParagraphId(nextPara.id);
+      
+      // Scroll to it
       setTimeout(() => {
         const el = document.getElementById(`para-${nextPara.id}`);
-        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 100);
 
-      // Trigger AI Explanation for the new block
+      // Trigger AI ONLY for this real paragraph
       triggerExplanation(nextPara.id);
+      
+      // Save Progress for the Real Paragraph
+      await saveProgressToDb(nextPara.id); // See helper function below
     } else {
-      // Chapter Done
+      // End of Chapter
       setActiveParagraphId(null);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now().toString(),
-          role: "assistant",
-          content: "🎉 Chapter completed! Great work.",
-        },
-      ]);
+      setMessages(prev => [...prev, {id: Date.now().toString(), role: 'assistant', content: "🎉 Chapter completed!"}]);
     }
+  };
+
+  // Helper to keep code clean
+ // Replace your existing saveProgressToDb with this robust version
+  const saveProgressToDb = async (blockId: string) => {
+    console.log("🔍 Attempting to save progress...");
+
+    // 1. Force Fetch User (Do not rely on state)
+    const { data: { user: currentUser }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !currentUser) {
+      alert("❌ SAVE FAILED: You are not logged in!");
+      console.error("Auth Error:", authError);
+      return;
+    }
+
+    console.log("👤 User found:", currentUser.id);
+
+    // 2. Try to Save
+    const { data, error } = await supabase.from("user_progress").upsert({
+      user_id: currentUser.id,
+      book_id: bookId,
+      current_block_id: blockId,
+      is_completed: true,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'user_id, book_id, current_block_id' })
+    .select();
+
+    if (error) {
+      alert(`❌ DB ERROR: ${error.message}`);
+      console.error("Supabase Error:", error);
+    } else {
+      console.log("✅ SAVE SUCCESSFUL:", data);
+      // alert("✅ Progress Saved to DB!"); // Uncomment this to verify success visually
+    }
+
+    // 3. Save XP
+    const newXp = (userXp || 0) + 10;
+    const { error: xpError } = await supabase.from("profiles").update({ xp: newXp }).eq("id", currentUser.id);
+    if (xpError) console.error("XP Error:", xpError);
+    
+    fetchStats();
   };
 
   const triggerExplanation = async (paragraphId: string) => {
@@ -654,10 +876,15 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-8">
             {chapters.map((chapter) => (
               <button
-                key={chapter.id}
-                onClick={() => setSelectedChapter(chapter)}
-                className="text-left bg-[#1e0a3c] hover:bg-[#2a1352] border border-white/5 p-6 rounded-2xl hover:-translate-y-1 transition-all"
-              >
+    key={chapter.id}
+    onClick={() => {
+      setSelectedChapter(chapter);
+      // Update URL here too
+      window.history.pushState(null, '', `?chapterId=${chapter.id}`);
+    }}
+    className="text-left bg-[#1e0a3c] ..."
+  >
+
                 <div className="flex justify-between mb-4">
                   <span className="text-xs font-mono font-bold text-purple-300 bg-purple-500/20 px-2 py-1 rounded">
                     CH {chapter.order_index}
@@ -878,16 +1105,21 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-2">
-          {chapters.map((c) => (
+          {chapters.map((chapter) => (
             <button
-              key={c.id}
-              onClick={() => setSelectedChapter(c)}
-              className={`w-full text-left p-3 rounded-lg text-sm mb-1 ${selectedChapter?.id === c.id ? "bg-purple-600/20 text-purple-300" : "text-gray-400 hover:bg-white/5"}`}
-            >
+    key={chapter.id}
+    onClick={() => {
+      setSelectedChapter(chapter);
+      // Update URL without reloading page
+      window.history.pushState(null, '', `?chapterId=${chapter.id}`);
+    }}
+    className={`w-full flex items-center gap-3 p-3 ... (rest of class)`}
+  >
+
               <span className="mr-2 font-mono text-xs opacity-50">
-                {c.order_index}.
+                {chapter.order_index}.
               </span>{" "}
-              {c.title}
+              {chapter.title}
             </button>
           ))}
         </div>
@@ -913,9 +1145,20 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
         {/* LOGIC TOGGLE */}
         {selectedChapter ? renderReader() : renderDashboard()}
       </div>
+      <div
+        onMouseDown={() => setIsResizing(true)}
+        className={`w-1 hover:w-2 bg-white/5 hover:bg-purple-500/50 cursor-col-resize transition-all z-50 flex items-center justify-center group ${isResizing ? 'bg-purple-500' : ''}`}
+      >
+        {/* Visual Dots for Grip */}
+        <div className="h-8 w-[2px] bg-gray-600 group-hover:bg-white rounded-full" />
+      </div>
 
       {/* RIGHT SIDEBAR (CHAT) */}
-      <div className="w-[400px] bg-[#0f0518] border-l border-white/5 flex flex-col">
+      {/* <div className="w-[400px] bg-[#0f0518] border-l border-white/5 flex flex-col"> */}
+      <div 
+        style={{ width: `${chatWidth}px` }} // Dynamic Width
+        className="flex-shrink-0 bg-[#0f0518] border-l border-white/5 flex flex-col transition-[width] duration-0 ease-linear"
+      >
         <div className="p-4 border-b border-white/5 bg-[#1e0a3c]/50">
           <h2 className="font-semibold flex items-center gap-2">
             <MessageSquare className="w-4 h-4 text-purple-400" /> AI Tutor
