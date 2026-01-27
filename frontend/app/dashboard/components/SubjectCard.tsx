@@ -3,7 +3,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { MoreHorizontal, BookOpen, Edit2, Trash2, Plus } from 'lucide-react';
 import { Subject, Book } from '@/app/dashboard/types';
 
-
 interface SubjectCardProps {
   subject: Subject;
   onAddBook: (id: string) => void;
@@ -50,7 +49,7 @@ export const SubjectCard: React.FC<SubjectCardProps> = ({
             className="w-3 h-3 rounded-full shadow-[0_0_8px_rgba(0,0,0,0.5)]"
             style={{ backgroundColor: subject.color, boxShadow: `0 0 10px ${subject.color}` }}
           />
-          <h3 className="font-bold text-lg text-white">{subject.name}</h3>
+          <h3 className="font-bold text-lg text-white truncate max-w-[160px]">{subject.name}</h3>
         </div>
         <div className="relative">
           <button 
@@ -63,24 +62,8 @@ export const SubjectCard: React.FC<SubjectCardProps> = ({
           {activeMenu === 'subject-menu' && (
             <div className="absolute right-0 top-8 w-40 bg-[#1e1b2e] border border-white/10 rounded-lg shadow-xl z-20 overflow-hidden animate-in fade-in zoom-in-95 duration-100">
               <div className="py-1">
-                <button 
-                  onClick={() => {
-                    onEditSubject(subject);
-                    setActiveMenu(null);
-                  }}
-                  className="w-full px-4 py-2 text-left text-sm text-gray-200 hover:bg-white/5 hover:text-white transition-colors"
-                >
-                  Edit Subject
-                </button>
-                <button 
-                  onClick={() => {
-                    onDeleteSubject(subject.id);
-                    setActiveMenu(null);
-                  }}
-                  className="w-full px-4 py-2 text-left text-sm text-red-500 hover:bg-white/5 transition-colors"
-                >
-                  Delete Subject
-                </button>
+                <button onClick={() => { onEditSubject(subject); setActiveMenu(null); }} className="w-full px-4 py-2 text-left text-sm text-gray-200 hover:bg-white/5 hover:text-white transition-colors">Edit Subject</button>
+                <button onClick={() => { onDeleteSubject(subject.id); setActiveMenu(null); }} className="w-full px-4 py-2 text-left text-sm text-red-500 hover:bg-white/5 transition-colors">Delete Subject</button>
               </div>
             </div>
           )}
@@ -100,12 +83,13 @@ export const SubjectCard: React.FC<SubjectCardProps> = ({
         )}
       </div>
 
-      {/* Recent Books List */}
+      {/* Recent Books List (CLEAN VERSION - No Progress Bars here) */}
       <div className="flex-grow space-y-3 mb-6">
         {subject.recentBooks.length > 0 && (
           <div className="text-xs text-gray-400 font-medium mb-2">Recent Books</div>
         )}
-        {subject.recentBooks.map((book) => (
+        
+        {subject.recentBooks.slice(0, 3).map((book) => (
           <div 
             key={book.id} 
             onClick={() => onBookClick(book)}
@@ -113,14 +97,14 @@ export const SubjectCard: React.FC<SubjectCardProps> = ({
           >
             <button 
               onClick={() => onBookClick(book)}
-              className="bg-white/5 rounded-lg p-2 flex items-center gap-3 flex-grow hover:bg-white/10 transition-colors text-left border border-transparent hover:border-white/5 pr-8"
+              className="bg-white/5 rounded-lg p-3 flex items-center gap-3 flex-grow hover:bg-white/10 transition-colors text-left border border-transparent hover:border-white/5 pr-8"
             >
               <div className="w-2 h-3 rounded-sm shrink-0" style={{ backgroundColor: book.color }}></div>
-              <span className="text-sm text-gray-300 truncate">{book.title}</span>
+              <span className="text-sm text-gray-300 truncate font-medium">{book.title}</span>
             </button>
             
             {/* Book Menu Trigger */}
-            <div className={`absolute right-1 ${activeMenu === book.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
+            <div className={`absolute right-2 top-2 ${activeMenu === book.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}>
                <div className="relative">
                 <button 
                   onClick={(e) => toggleMenu(book.id, e)}
@@ -131,26 +115,8 @@ export const SubjectCard: React.FC<SubjectCardProps> = ({
                 
                 {activeMenu === book.id && (
                   <div className="absolute right-0 top-full mt-1 w-32 bg-[#1e1b2e] border border-white/10 rounded-lg shadow-xl z-30 overflow-hidden animate-in fade-in zoom-in-95 duration-100">
-                    <button 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onEditBook(subject.id, book);
-                        setActiveMenu(null);
-                      }}
-                      className="w-full px-3 py-2 text-left text-xs text-gray-200 hover:bg-white/10 hover:text-white flex items-center gap-2 transition-colors"
-                    >
-                      <Edit2 className="w-3 h-3" /> Edit
-                    </button>
-                    <button 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteBook(subject.id, book.id);
-                        setActiveMenu(null);
-                      }}
-                      className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-red-500/10 flex items-center gap-2 transition-colors"
-                    >
-                      <Trash2 className="w-3 h-3" /> Delete
-                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); onEditBook(subject.id, book); setActiveMenu(null); }} className="w-full px-3 py-2 text-left text-xs text-gray-200 hover:bg-white/10 hover:text-white flex items-center gap-2 transition-colors"><Edit2 className="w-3 h-3" /> Edit</button>
+                    <button onClick={(e) => { e.stopPropagation(); onDeleteBook(subject.id, book.id); setActiveMenu(null); }} className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-red-500/10 flex items-center gap-2 transition-colors"><Trash2 className="w-3 h-3" /> Delete</button>
                   </div>
                 )}
                </div>
@@ -165,15 +131,15 @@ export const SubjectCard: React.FC<SubjectCardProps> = ({
         )}
       </div>
 
-      {/* Progress Bar */}
-      <div className="mb-6">
+      {/* SUBJECT PROGRESS BAR (This remains) */}
+      <div className="mb-6 pt-2 border-t border-white/5">
         <div className="flex justify-between text-xs text-gray-400 mb-1">
-          <span>Progress</span>
-          <span>{subject.progress}%</span>
+          <span>Overall Completion</span>
+          <span className="text-white font-bold">{subject.progress}%</span>
         </div>
         <div className="h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
           <div 
-            className="h-full bg-gradient-to-r from-purple-600 to-purple-400 rounded-full"
+            className="h-full bg-gradient-to-r from-purple-600 to-purple-400 rounded-full transition-all duration-1000"
             style={{ width: `${subject.progress}%` }}
           />
         </div>
@@ -195,7 +161,6 @@ export const SubjectCard: React.FC<SubjectCardProps> = ({
     </div>
   );
 };
-
 
 
 // second card

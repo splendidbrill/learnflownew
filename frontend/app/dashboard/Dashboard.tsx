@@ -115,75 +115,105 @@ useEffect(() => {
  // ... inside Dashboard component ...
 
  useEffect(() => {
-  const fetchAllData = async () => {
-    if (!user) return;
+    const fetchAllData = async () => {
+      if (!user) return;
 
-    try {
-      // 1. Fetch Subjects & Books (Your existing logic)
-      const { data: coursesData, error } = await supabase
-        .from('courses')
-        .select(`*, course_books(*)`)
-        .eq('user_id', user.id) // Ensure we only get this user's data
-        .order('created_at', { ascending: true });
+      try {
+        // 1. Fetch Subjects & Books
+        const { data: coursesData, error } = await supabase
+          .from('courses')
+          .select(`*, course_books(*)`)
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: true });
 
-      if (error) throw error;
+        if (error) throw error;
 
-      // 2. Fetch Gamification Stats (NEW API CALL)
-      const statsRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/stats/${user.id}`);
-      const statsData = await statsRes.json();
+        // 2. Fetch Gamification Stats
+        const statsRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/stats/${user.id}`);
+        const statsData = await statsRes.json();
 
-      // 3. Process Courses Data
-      let totalBooks = 0;
-      const formattedSubjects: Subject[] = (coursesData || []).map((s: any) => {
-        const books = s.course_books || [];
-        totalBooks += books.length;
-        return {
-          id: s.id,
-          user_id: s.user_id,
-          name: s.name,
-          color: s.color,
-          description: s.description,
-          created_at: s.created_at,
-          bookCount: books.length,
-          recentBooks: books.map((b: any) => ({
-            id: b.id,
-            title: b.title,
-            author: b.author,
-            description: b.description,
-            color: s.color, // Inherit subject color
-            fileUrl: b.file_url,
-            analogy_topic: b.analogy_topic
-          })),
-          isActive: false,
-          progress: 0 // You can calculate this later based on paragraphs
-        };
-      });
+        // 3. FETCH BOOK PROGRESS (NEW SQL FUNCTION)
+        const { data: progressData, error: progressError } = await supabase
+          .rpc('get_user_book_progress', { target_user_id: user.id });
 
-      // 4. Update the Store with MERGED data
-      useStore.setState({ 
-        subjects: formattedSubjects,
-        stats: {
-          subjects: formattedSubjects.length,
-          totalBooks: totalBooks,
-          completed: 0, // Calculate this if you want exact completed count
-          progress: 0,
-          // REAL GAMIFICATION DATA:
-          xp: statsData.xp || 0,
-          streak: statsData.streak || 0,
-          level: statsData.level || 1,
-          rank: statsData.rank || "Novice"
+        if (progressError) console.error("Progress fetch error:", progressError);
+
+        // Create a lookup map: { 'book_uuid': 55 } (55% done)
+        const progressMap: Record<string, number> = {};
+        if (progressData) {
+            progressData.forEach((p: any) => {
+                if (p.total_paragraphs > 0) {
+                    progressMap[p.book_id] = Math.round((p.completed_paragraphs / p.total_paragraphs) * 100);
+                } else {
+                    progressMap[p.book_id] = 0;
+                }
+            });
         }
-      });
 
-    } catch (error) {
-      console.error('Error fetching dashboard data:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+        // 4. Process Data & Merge Progress
+        let totalBooks = 0;
+        const formattedSubjects: Subject[] = (coursesData || []).map((s: any) => {
+          const books = s.course_books || [];
+          totalBooks += books.length;
+          
+          // Calculate Subject Progress (Average of its books)
+          let subjectTotalProgress = 0;
 
-  fetchAllData();
-}, [user, supabase]);
+          const processedBooks = books.map((b: any) => {
+            const bookProgress = progressMap[b.id] || 0;
+            subjectTotalProgress += bookProgress;
+            
+            return {
+              id: b.id,
+              title: b.title,
+              author: b.author,
+              description: b.description,
+              color: s.color,
+              fileUrl: b.file_url,
+              analogy_topic: b.analogy_topic,
+              progress: bookProgress // <--- Assign Real Progress Here
+            };
+          });
+
+          return {
+            id: s.id,
+            user_id: s.user_id,
+            name: s.name,
+            color: s.color,
+            description: s.description,
+            created_at: s.created_at,
+            bookCount: books.length,
+            recentBooks: processedBooks,
+            isActive: false,
+            // Calculate average for the subject card itself
+            progress: books.length > 0 ? Math.round(subjectTotalProgress / books.length) : 0
+          };
+        });
+
+        // 5. Update Store
+        useStore.setState({ 
+          subjects: formattedSubjects,
+          stats: {
+            subjects: formattedSubjects.length,
+            totalBooks: totalBooks,
+            completed: 0, 
+            progress: 0,
+            xp: statsData.xp || 0,
+            streak: statsData.streak || 0,
+            level: statsData.level || 1,
+            rank: statsData.rank || "Novice"
+          }
+        });
+
+      } catch (error) {
+        console.error('Error fetching dashboard data:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchAllData();
+  }, [user, supabase]);
 
   useEffect(() => {
     const fetchData = async () => {
