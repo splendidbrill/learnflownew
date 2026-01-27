@@ -488,33 +488,49 @@ const isContentWorthExplaining = (text: string, type?: string) => {
   };
 
   // 4. CHAT HANDLER
-  const handleSendMessage = async (e: React.FormEvent) => {
+ const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim()) return;
+    if (!input.trim() || !selectedChapter) return;
 
     const userText = input.trim();
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      role: "user",
-      content: userText,
-    };
-    setMessages((prev) => [...prev, userMessage]);
-    setInput("");
+    const tempId = Date.now().toString();
 
-    // Shortcuts
+    // 1. UPDATE UI IMMEDIATELY
+    const userMessage: Message = { id: tempId, role: "user", content: userText };
+    setMessages((prev) => [...prev, userMessage]);
+    setInput(""); // Clear input
+
+    // Shortcut Logic
     const cleanCommand = userText.toLowerCase().replace(/[^a-z]/g, "");
-    if (
-      activeParagraphId &&
-      ["yes", "next", "ok", "continue"].includes(cleanCommand)
-    ) {
+    if (activeParagraphId && ["yes", "next", "ok", "continue"].includes(cleanCommand)) {
       setTimeout(() => handleNextParagraph(), 500);
-      return;
+      return; 
     }
 
-    if (!selectedChapter) return;
     setIsAiThinking(true);
 
     try {
+      // 2. FORCE GET USER
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      if (!currentUser?.id) throw new Error("User not logged in");
+
+      // 3. SAVE USER MESSAGE TO DB (AWAIT THIS!)
+      console.log("💾 Saving User Message...");
+      const { error: userMsgError } = await supabase.from("chat_logs").insert({
+        chapter_id: selectedChapter.id,
+        user_id: currentUser.id,
+        role: "user",
+        content: userText,
+      });
+
+      if (userMsgError) {
+        console.error("❌ User Save Failed:", userMsgError);
+        throw userMsgError; // Stop if we can't save
+      } else {
+        console.log("✅ User Message Saved");
+      }
+
+      // 4. CALL AI
       const response = await fetch(`${API_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -523,17 +539,16 @@ const isContentWorthExplaining = (text: string, type?: string) => {
           chapterId: selectedChapter.id,
           currentParagraphId: activeParagraphId,
           userResponse: userText,
-          userId: user?.id,
-          bookId: bookId,
+          userId: currentUser.id, 
+          bookId: bookId,   
         }),
       });
 
-      if (!response.body) return;
+      if (!response.body) throw new Error("No AI Response");
+
+      // 5. STREAM AI RESPONSE
       const aiMessageId = (Date.now() + 1).toString();
-      setMessages((prev) => [
-        ...prev,
-        { id: aiMessageId, role: "assistant", content: "" },
-      ]);
+      setMessages((prev) => [...prev, { id: aiMessageId, role: "assistant", content: "" }]);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -547,52 +562,32 @@ const isContentWorthExplaining = (text: string, type?: string) => {
         accumulatedText += chunkValue;
 
         if (accumulatedText.toLowerCase().includes("[next]")) {
-          const cleanText = accumulatedText.replace(/\[next\]/gi, "").trim();
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === aiMessageId ? { ...msg, content: cleanText } : msg,
-            ),
-          );
-          handleNextParagraph();
-          return;
+           const cleanText = accumulatedText.replace(/\[next\]/gi, "").trim();
+           setMessages((prev) => prev.map((msg) => msg.id === aiMessageId ? { ...msg, content: cleanText } : msg));
+           handleNextParagraph();
+           return; 
         }
 
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === aiMessageId ? { ...msg, content: accumulatedText } : msg,
-          ),
-        );
+        setMessages((prev) => prev.map((msg) => msg.id === aiMessageId ? { ...msg, content: accumulatedText } : msg));
       }
 
+      // 6. SAVE AI RESPONSE TO DB (AWAIT THIS!)
       if (accumulatedText.trim()) {
-        const { data: { user: currentUser } } = await supabase.auth.getUser();
-
-        if (currentUser?.id) {
-       await supabase.from("chat_logs").insert({
-          chapter_id: selectedChapter!.id,
-          user_id: currentUser.id, // <--- USE FRESH ID
+        console.log("💾 Saving AI Message...");
+        const { error: aiMsgError } = await supabase.from("chat_logs").insert({
+          chapter_id: selectedChapter.id,
+          user_id: currentUser.id,
           role: "assistant",
           content: accumulatedText,
-       });
-   }
+        });
+
+        if (aiMsgError) console.error("❌ AI Save Failed:", aiMsgError);
+        else console.log("✅ AI Message Saved");
       }
-      if (accumulatedText.trim()) {
-        // Force get user again to be safe
-        const { data: { user: currentUser } } = await supabase.auth.getUser();
-        
-        if (currentUser?.id) {
-            const { error } = await supabase.from("chat_logs").insert({
-              chapter_id: selectedChapter!.id,
-              user_id: currentUser.id,
-              role: "assistant",
-              content: accumulatedText,
-            });
-            if (error) console.error("❌ Chat Save Failed:", error);
-            else console.log("✅ Chat Saved");
-        }
-      }
-    } catch (error) {
-      console.error(error);
+
+    } catch (error: any) {
+      console.error("Chat Error:", error);
+      // Optional: Add visual error state
     } finally {
       setIsAiThinking(false);
     }
@@ -703,34 +698,37 @@ const isContentWorthExplaining = (text: string, type?: string) => {
     fetchStats();
   };
 
-  const triggerExplanation = async (paragraphId: string) => {
+  const triggerExplanation = async (paraId: string) => {
     setIsAiThinking(true);
+
     try {
+      // 1. FORCE GET USER (Ensure we have ID for saving later)
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      if (!currentUser?.id) {
+         console.error("Cannot explain: User not logged in");
+         return;
+      }
+
+      // 2. CALL API
       const response = await fetch(`${API_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: [
-            {
-              id: Date.now().toString(),
-              role: "user",
-              content: "Explain this paragraph.",
-            },
-          ],
+          // Hidden context message for the AI
+          messages: [{ id: Date.now().toString(), role: "user", content: "Explain this paragraph." }], 
           chapterId: selectedChapter!.id,
-          currentParagraphId: paragraphId,
+          currentParagraphId: paraId, 
           userResponse: "Explain",
-          userId: user?.id,
+          userId: currentUser.id,
           bookId: bookId,
         }),
       });
 
       if (!response.body) return;
+
+      // 3. UPDATE UI (Stream)
       const aiMessageId = (Date.now() + 1).toString();
-      setMessages((prev) => [
-        ...prev,
-        { id: aiMessageId, role: "assistant", content: "" },
-      ]);
+      setMessages((prev) => [...prev, { id: aiMessageId, role: "assistant", content: "" }]);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -740,28 +738,41 @@ const isContentWorthExplaining = (text: string, type?: string) => {
       while (!done) {
         const { value, done: doneReading } = await reader.read();
         done = doneReading;
-        accumulatedText += decoder.decode(value, { stream: true });
-
+        const chunkValue = decoder.decode(value, { stream: true });
+        accumulatedText += chunkValue;
+        
+        // Remove [NEXT] tag from UI
         if (accumulatedText.toLowerCase().includes("[next]")) {
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === aiMessageId
-                ? { ...msg, content: accumulatedText.replace(/\[next\]/gi, "") }
-                : msg,
-            ),
-          );
-          return;
+            const cleanText = accumulatedText.replace(/\[next\]/gi, "").trim();
+            setMessages((prev) => prev.map((msg) => msg.id === aiMessageId ? { ...msg, content: cleanText } : msg));
+            // We don't return here yet, we need to save the cleaned text below
+            accumulatedText = cleanText; 
+            break; // Stop stream processing
         }
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === aiMessageId ? { ...msg, content: accumulatedText } : msg,
-          ),
-        );
+        
+        setMessages((prev) => prev.map((msg) => msg.id === aiMessageId ? { ...msg, content: accumulatedText } : msg));
       }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsAiThinking(false);
+
+      // --- 4. SAVE TO DATABASE (THIS WAS MISSING) ---
+      if (accumulatedText.trim()) {
+         console.log("💾 Saving Auto-Explanation to DB...");
+         
+         const { error } = await supabase.from("chat_logs").insert({
+           chapter_id: selectedChapter!.id,
+           user_id: currentUser.id,
+           role: "assistant",
+           content: accumulatedText,
+           // created_at will be auto-generated by DB
+         });
+
+         if (error) console.error("❌ Auto-Save Failed:", error.message);
+         else console.log("✅ Auto-Explanation Saved!");
+      }
+
+    } catch (e) { 
+      console.error(e); 
+    } finally { 
+      setIsAiThinking(false); 
     }
   };
 
