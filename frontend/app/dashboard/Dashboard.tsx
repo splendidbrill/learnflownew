@@ -155,13 +155,23 @@ useEffect(() => {
         const formattedSubjects: Subject[] = (coursesData || []).map((s: any) => {
           const books = s.course_books || [];
           totalBooks += books.length;
+           let sumOfBookPercentages = 0;
           
           // Calculate Subject Progress (Average of its books)
           let subjectTotalProgress = 0;
 
           const processedBooks = books.map((b: any) => {
-            const bookProgress = progressMap[b.id] || 0;
-            subjectTotalProgress += bookProgress;
+            // const bookProgress = progressMap[b.id] || 0;
+            // subjectTotalProgress += bookProgress;
+
+            const stats = progressData?.find((p: any) => p.book_id === b.id);
+            const total = stats?.total_paragraphs || 0;
+            const completed = stats?.completed_paragraphs || 0;
+
+            // Calculate Book Percentage
+            const bookPercent = total > 0 ? Math.round((completed / total) * 100) : 0;
+            
+            sumOfBookPercentages += bookPercent;
             
             return {
               id: b.id,
@@ -171,9 +181,12 @@ useEffect(() => {
               color: s.color,
               fileUrl: b.file_url,
               analogy_topic: b.analogy_topic,
-              progress: bookProgress // <--- Assign Real Progress Here
+              progress: bookPercent  // <--- Assign Real Progress Here
             };
           });
+           const subjectProgress = books.length > 0 
+            ? Math.round(sumOfBookPercentages / books.length) 
+            : 0;
 
           return {
             id: s.id,
@@ -186,7 +199,7 @@ useEffect(() => {
             recentBooks: processedBooks,
             isActive: false,
             // Calculate average for the subject card itself
-            progress: books.length > 0 ? Math.round(subjectTotalProgress / books.length) : 0
+            progress: subjectProgress,
           };
         });
 
