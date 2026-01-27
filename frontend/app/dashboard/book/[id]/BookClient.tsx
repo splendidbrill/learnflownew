@@ -947,6 +947,24 @@ export const BookClient: React.FC<BookClientProps> = ({ bookId }) => {
               </div>
             </div>
           )}
+          {activeParagraphId && !isAiThinking && messages.length > 0 && (
+            <div className="flex justify-end mt-4 mb-2 animate-in fade-in slide-in-from-bottom-2">
+              <div className="bg-purple-900/20 border border-purple-500/30 p-3 rounded-xl rounded-br-none text-right shadow-lg">
+                <p className="text-[10px] text-purple-300 uppercase font-bold mb-2 tracking-wider">
+                  Section Completed
+                </p>
+                <p className="text-xs text-gray-300 mb-3">
+                  Type <span className="text-white font-mono bg-white/10 px-1 rounded">Next</span> or click below to continue.
+                </p>
+                <button 
+                  onClick={handleNextParagraph}
+                  className="ml-auto bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-2 transition-all"
+                >
+                  Next Paragraph <ChevronRight className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          )}
           <div ref={messagesEndRef} />
         </div>
         <div className="p-4 bg-[#0a0212] border-t border-white/5">
