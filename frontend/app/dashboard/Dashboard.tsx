@@ -53,6 +53,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
   const [isSubjectModalOpen, setIsSubjectModalOpen] = useState(false);
   const [editingSubject, setEditingSubject] = useState<Subject | null>(null);
   const [statsData, setStatsData] = useState({ xp: 0, streak: 0, rank: 'Novice', level: 1 });
+  
   // Modal State for Books
   const [bookModalState, setBookModalState] = useState<{ 
     isOpen: boolean; 
@@ -76,6 +77,40 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
     id: null,
     name: ''
   });
+
+  const [userMetrics, setUserMetrics] = useState({ 
+  xp: 0, 
+  streak: 0, 
+  totalBooks: 0, 
+  totalSubjects: 0 
+});
+
+useEffect(() => {
+  const fetchGlobalStats = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    // 1. Fetch GLOBAL XP from Profiles
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('xp')
+      .eq('id', user.id)
+      .single();
+
+    // 2. Fetch Counts
+    const { count: books } = await supabase.from('course_books').select('*', { count: 'exact', head: true });
+    const { count: subjects } = await supabase.from('subjects').select('*', { count: 'exact', head: true });
+
+    setUserMetrics({
+      xp: profile?.xp || 0,
+      streak: 0, // Placeholder for now
+      totalBooks: books || 0,
+      totalSubjects: subjects || 0
+    });
+  };
+
+  fetchGlobalStats();
+}, []);
 
  // ... inside Dashboard component ...
 
@@ -417,7 +452,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
             {/* 1. XP CARD */}
             <StatCard 
               title="Total XP" 
-              value={stats.xp || 0} 
+              value={userMetrics.xp || 0} 
               icon={Zap} 
               subtext={`Lvl ${stats.level || 1} - ${stats.rank || 'Novice'}`} 
             />
@@ -425,14 +460,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
             {/* 2. STREAK CARD */}
             <StatCard 
               title="Day Streak" 
-              value={stats.streak || 0} 
+              value={userMetrics.streak || 0} 
               icon={Flame} 
             />
             
             {/* 3. EXISTING TOTAL BOOKS */}
             <StatCard 
               title="Total Books" 
-              value={stats.totalBooks} 
+              value={userMetrics.totalBooks} 
               icon={BookIcon} 
             />
 

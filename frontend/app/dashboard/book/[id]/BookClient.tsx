@@ -93,6 +93,9 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     null,
   );
 
+  const [bookXp, setBookXp] = useState(0);
+  const [bookLevelXp, setBookLevelXp] = useState(0);
+
   // Stats State
   const [userXp, setUserXp] = useState(0);
   const [bookProgress, setBookProgress] = useState(0);
@@ -125,51 +128,40 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     fetchStats();
   }, []);
 
-// REPLACE your existing fetchStats with this version
-  const fetchStats = async (currentUserId?: string) => {
-    // 1. Determine User ID (Argument > State > Auth Check)
-    let uid = currentUserId;
-    if (!uid) {
-        const { data } = await supabase.auth.getUser();
-        uid = data.user?.id;
-    }
 
-    if (!uid) {
-        console.log("⚠️ Stats skipped: No User ID");
-        return;
-    }
+ const fetchStats = async (currentUserId?: string) => {
+  // 1. Get User ID
+  let uid = currentUserId;
+  if (!uid) {
+      const { data } = await supabase.auth.getUser();
+      uid = data.user?.id;
+  }
+  if (!uid) return;
 
-    console.log("📊 Fetching stats for:", uid);
+  // 2. Count TOTAL paragraphs in book
+  const { count: total } = await supabase
+    .from('paragraphs')
+    .select('*', { count: 'exact', head: true })
+    .eq('book_id', bookId);
 
-    try {
-        // 2. Count TOTAL Paragraphs
-        const { count: total, error: err1 } = await supabase
-          .from('paragraphs')
-          .select('*', { count: 'exact', head: true })
-          .eq('book_id', bookId);
+  // 3. Count COMPLETED paragraphs for USER in THIS BOOK
+  const { count: completed } = await supabase
+    .from('user_progress')
+    .select('*', { count: 'exact', head: true })
+    .eq('book_id', bookId)
+    .eq('user_id', uid)
+    .eq('is_completed', true);
 
-        if (err1) throw err1;
+  // 4. Update UI
+  if (total && total > 0) {
+    setBookProgress(Math.round(((completed || 0) / total) * 100));
+  }
 
-        // 3. Count COMPLETED (Using explicit User ID)
-        const { count: completed, error: err2 } = await supabase
-          .from('user_progress')
-          .select('*', { count: 'exact', head: true })
-          .eq('book_id', bookId)
-          .eq('user_id', uid) // <--- Use the variable, not state
-          .eq('is_completed', true);
-
-        if (err2) throw err2;
-
-        // 4. Update State
-        if (total && total > 0) {
-          const percent = Math.round(((completed || 0) / total) * 100);
-          console.log(`📈 Progress: ${percent}% (${completed}/${total})`);
-          setBookProgress(percent);
-        }
-    } catch (error) {
-        console.error("❌ Stats Calculation Failed:", error);
-    }
-  };
+  // --- CALCULATE BOOK XP (Local) ---
+  // 10 XP per completed paragraph
+  const localXp = (completed || 0) * 10;
+  setBookLevelXp(localXp);
+};
 
   useEffect(() => {
   const chapterIdFromUrl = searchParams.get('chapterId');
@@ -248,15 +240,13 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
   // Load Chat History
   // Find your chat loading useEffect
+ // RELIABLE CHAT LOADING
   useEffect(() => {
     const loadChatHistory = async () => {
-      // --- ADD THIS STRICT CHECK ---
-      if (!selectedChapter?.id) {
-        console.log("⏳ Waiting for chapter selection...");
-        return;
-      }
+      // 1. Strict Guard: Don't fetch if no chapter or no user
+      if (!selectedChapter?.id) return;
 
-      console.log("✅ Loading Chat for:", selectedChapter.id);
+      console.log(`💬 Fetching chats for Chapter: ${selectedChapter.id}`);
 
       const { data, error } = await supabase
         .from("chat_logs")
@@ -265,20 +255,22 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
         .order("created_at", { ascending: true });
 
       if (error) {
-        console.error("Chat Load Error:", error);
+        console.error("❌ Chat Fetch Error:", error);
       } else if (data) {
+        console.log(`✅ Loaded ${data.length} messages`);
         setMessages(
           data.map((m) => ({
             id: m.id,
             role: m.role as any,
             content: m.content,
+            imageUrl: m.imageUrl // Ensure your DB has this column if you use images in chat
           }))
         );
       }
     };
 
     loadChatHistory();
-  }, [selectedChapter]); // <--- Dependency is correct
+  }, [selectedChapter?.id]); // <--- Key Change: Depend on the ID string, not the object // <--- Dependency is correct
 
   // Helper: Decides if a paragraph is "Real Content" or just "Noise"
 // Helper: Decides if a paragraph is "Real Content" or just "Noise"
@@ -573,12 +565,16 @@ const isContentWorthExplaining = (text: string, type?: string) => {
       }
 
       if (accumulatedText.trim()) {
-        supabase.from("chat_logs").insert({
+        const { data: { user: currentUser } } = await supabase.auth.getUser();
+
+        if (currentUser?.id) {
+       await supabase.from("chat_logs").insert({
           chapter_id: selectedChapter!.id,
-          user_id: user?.id,
+          user_id: currentUser.id, // <--- USE FRESH ID
           role: "assistant",
           content: accumulatedText,
-        });
+       });
+   }
       }
       if (accumulatedText.trim()) {
         // Force get user again to be safe
@@ -950,7 +946,7 @@ const isContentWorthExplaining = (text: string, type?: string) => {
               <p className="text-[10px] uppercase text-gray-500 font-bold">
                 Total XP
               </p>
-              <p className="text-sm font-bold text-white">{userXp} XP</p>
+              <p className="text-sm font-bold text-white">{bookLevelXp} XP</p>
             </div>
           </div>
         </div>
