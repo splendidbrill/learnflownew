@@ -97,7 +97,7 @@ export default function Hero(): JSX.Element {
                 ))}
               </div>
               <div className="text-sm text-slate-400">
-                <span className="text-white font-semibold">10,000+</span>{" "}
+                <span className="text-white font-semibold">10+</span>{" "}
                 students learning smarter
               </div>
             </motion.div>

@@ -99,6 +99,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   // Stats State
   const [userXp, setUserXp] = useState(0);
   const [bookProgress, setBookProgress] = useState(0);
+   const [chapterProgress, setChapterProgress] = useState(0);
 
   // UI State
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -163,6 +164,22 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   setBookLevelXp(localXp);
 };
 
+useEffect(() => {
+    if (!paragraphs || paragraphs.length === 0) {
+      setChapterProgress(0);
+      return;
+    }
+
+    // Count how many paragraphs in THIS specific chapter are done
+    const completedCount = paragraphs.filter(p => p.is_completed).length;
+    const totalCount = paragraphs.length;
+    
+    // Calculate %
+    const percent = Math.round((completedCount / totalCount) * 100);
+    setChapterProgress(percent);
+    
+  }, [paragraphs]);
+
   useEffect(() => {
   const chapterIdFromUrl = searchParams.get('chapterId');
   console.log("URL PARAM:", chapterIdFromUrl); // <--- CHECK THIS LOG
@@ -212,19 +229,54 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   }, [bookStatus, bookId]);
 
   // Load Paragraphs
+  // Load Paragraphs & Merge with User Progress
   useEffect(() => {
     const loadParagraphs = async () => {
       if (!selectedChapter) return;
-      const { data } = await supabase
+      
+      // 1. Fetch the raw content (Text/Images)
+      const { data: rawParagraphs, error: paraError } = await supabase
         .from("paragraphs")
         .select("*")
         .eq("chapter_id", selectedChapter.id)
         .order("order_index", { ascending: true });
-      setParagraphs(data || []);
+
+      if (paraError) {
+        console.error("Error loading paragraphs:", paraError);
+        return;
+      }
+
+      // 2. Fetch YOUR progress for these paragraphs
+      // We only need to check if the user is logged in
+      let completedIds = new Set();
+      
+      if (user) {
+        const { data: progressData, error: progError } = await supabase
+          .from("user_progress")
+          .select("current_block_id")
+          .eq("user_id", user.id)
+          .eq("is_completed", true)
+          // Optimization: Only look for IDs that belong to this chapter
+          .in("current_block_id", rawParagraphs.map(p => p.id));
+
+        if (progressData) {
+          progressData.forEach(p => completedIds.add(p.current_block_id));
+        }
+      }
+
+      // 3. Merge them together
+      const mergedParagraphs = rawParagraphs.map(p => ({
+        ...p,
+        // Override the default is_completed with the REAL user data
+        is_completed: completedIds.has(p.id) 
+      }));
+
+      setParagraphs(mergedParagraphs || []);
       setIsGenerating(false);
     };
+
     loadParagraphs();
-  }, [selectedChapter]);
+  }, [selectedChapter, user]); // <--- Added 'user' to dependency so it re-runs on login
 
     useEffect(() => {
     // 1. Get the session immediately
@@ -993,12 +1045,21 @@ const isContentWorthExplaining = (text: string, type?: string) => {
                 Progress
               </p>
               <p className="text-sm font-bold text-white">
-                {bookProgress}% Done
+                {chapterProgress}% Done
               </p>
             </div>
           </div>
           <div className="w-px h-8 bg-white/10"></div>
           <div className="flex items-center gap-3">
+            <div className="bg-purple-500/20 p-2 rounded-lg">
+              <BookOpen className="w-5 h-5 text-purple-400" />
+            </div>
+            <div>
+              <p className="text-[10px] uppercase text-gray-500 font-bold">
+                Book Total
+              </p>
+              <p className="text-sm font-bold text-white">{bookProgress}%</p>
+            </div>
             <div className="bg-yellow-500/20 p-2 rounded-lg">
               <Trophy className="w-5 h-5 text-yellow-400" />
             </div>
