@@ -18,7 +18,7 @@ import {
   Flame,
   PieChart,
   Clock,
-  FileText,Volume2 ,
+  FileText,Volume2 ,Play, Pause, Globe,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { ScheduleModal } from "../../components/ScheduleModal"; // Ensure this path is correct
@@ -100,8 +100,12 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  
   const [selectedLanguage, setSelectedLanguage] = useState("english"); // Add a dropdown somewhere
+   const [audioLanguage, setAudioLanguage] = useState("english"); // Default
+  const [playingMessageId, setPlayingMessageId] = useState<string | null>(null);
+  const [loadingAudioId, setLoadingAudioId] = useState<string | null>(null);
+  
 
   const [bookXp, setBookXp] = useState(0);
   const [bookLevelXp, setBookLevelXp] = useState(0);
@@ -131,6 +135,14 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   // Resizable Sidebar State
   const [chatWidth, setChatWidth] = useState(400); // Default width
   const [isResizing, setIsResizing] = useState(false);
+  
+  
+  
+  
+  // NEW: Tracks which message is currently loaded in the audio player
+  const [currentAudioMessageId, setCurrentAudioMessageId] = useState<string | null>(null); 
+  
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // --- INITIALIZATION ---
 
@@ -346,6 +358,16 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
     loadChatHistory();
   }, [selectedChapter?.id]); // <--- Key Change: Depend on the ID string, not the object // <--- Dependency is correct
+
+  // Reset audio if language changes
+  useEffect(() => {
+    setCurrentAudioMessageId(null);
+    setPlayingMessageId(null);
+    if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0; // Reset time
+    }
+  }, [audioLanguage]);
 
   // Helper: Decides if a paragraph is "Real Content" or just "Noise"
   // Helper: Decides if a paragraph is "Real Content" or just "Noise"
@@ -1328,6 +1350,64 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     }
   };
 
+    const handleToggleAudio = async (messageId: string, text: string) => {
+    // 1. If currently playing THIS message -> PAUSE
+    if (playingMessageId === messageId) {
+      audioRef.current?.pause();
+      setPlayingMessageId(null);
+      return;
+    }
+
+    //RESUME
+    // If we are clicking a message that is already loaded (but paused)...
+    if (currentAudioMessageId === messageId && audioRef.current) {
+      audioRef.current.play();
+      setPlayingMessageId(messageId); // UI shows "Pause" button
+      return;
+    }
+
+    // 2. If playing ANOTHER message -> STOP IT
+    if (playingMessageId) {
+      audioRef.current?.pause();
+      setPlayingMessageId(null);
+    }
+
+    setLoadingAudioId(messageId); // Start Spinner
+
+    try {
+      // 3. Call API
+      const res = await fetch(`${API_URL}/api/speak`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: text,
+          language: audioLanguage // Use selected language
+        }),
+      });
+
+      if (!res.ok) throw new Error("Audio generation failed");
+
+      // 4. Play Audio
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      
+      if (audioRef.current) {
+        audioRef.current.src = url;
+        audioRef.current.play();
+        setPlayingMessageId(messageId); // Set Active Icon to Pause
+        setCurrentAudioMessageId(messageId);  // It is loaded
+        // Reset when finished
+        audioRef.current.onended = () => setPlayingMessageId(null);
+      }
+
+    } catch (e) {
+      console.error(e);
+      alert("Could not generate audio");
+    } finally {
+      setLoadingAudioId(null); // Stop Spinner
+    }
+  };
+
   // --- MAIN UI ---
   if (isLoadingData)
     return (
@@ -1414,6 +1494,20 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
           <h2 className="font-semibold flex items-center gap-2">
             <MessageSquare className="w-4 h-4 text-purple-400" /> AI Tutor
           </h2>
+          <div className="flex items-center gap-2 bg-black/20 rounded-lg px-2 py-1 border border-white/10">
+              <Globe className="w-3 h-3 text-gray-400" />
+              <select 
+                value={audioLanguage}
+                onChange={(e) => setAudioLanguage(e.target.value)}
+                className="bg-transparent text-xs text-gray-300 outline-none cursor-pointer uppercase font-bold"
+              >
+                <option value="english">English</option>
+                <option value="hindi">Hindi</option>
+                <option value="spanish">Spanish</option>
+                <option value="chinese">Chinese</option>
+              </select>
+            </div>
+
         </div>
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {messages.map((m) => (
@@ -1422,25 +1516,58 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
               className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
             >
               <div
-                className={`max-w-[85%] p-3 rounded-2xl text-sm ${m.role === "user" ? "bg-purple-600 text-white rounded-br-none" : "bg-[#1e0a3c] border border-white/10 text-gray-200 rounded-bl-none"}`}
+                className={`max-w-[85%] p-3 rounded-2xl text-sm ${
+                  m.role === "user" 
+                    ? "bg-purple-600 text-white rounded-br-none" 
+                    : "bg-[#1e0a3c] border border-white/10 text-gray-200 rounded-bl-none"
+                }`}
               >
+                {/* 1. Image (if any) */}
                 {m.imageUrl && (
                   <img
                     src={m.imageUrl}
                     className="mb-2 rounded-lg border border-white/10"
+                    alt="Diagram context"
                   />
                 )}
+
+                {/* 2. Text Content */}
                 <ReactMarkdown>{m.content}</ReactMarkdown>
-                {/* SPEAKER BUTTON */}
-                {m.role === "assistant" && (
-                  <button
-                    onClick={() => handlePlayAudio(m.content)}
-                    className="mt-2 text-gray-400 hover:text-purple-400 transition-colors"
-                    title="Read Aloud"
-                  >
-                    <Volume2 className="w-4 h-4" />{" "}
-                    {/* Import Volume2 from lucide-react */}
-                  </button>
+
+                {/* 3. NEW AUDIO CONTROLS (Replace old button with this) */}
+                {m.role === 'assistant' && (
+                    <div className="mt-3 flex items-center gap-2 border-t border-white/5 pt-2">
+                      <button 
+                        onClick={() => handleToggleAudio(m.id, m.content)}
+                        disabled={loadingAudioId === m.id}
+                        className={`
+                          flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all
+                          ${playingMessageId === m.id 
+                            ? 'bg-purple-500 text-white shadow-[0_0_10px_rgba(168,85,247,0.4)]' 
+                            : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'}
+                        `}
+                      >
+                        {/* Dynamic Icon Logic */}
+                        {loadingAudioId === m.id ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : playingMessageId === m.id ? (
+                          <Pause className="w-3 h-3 fill-current" />
+                        ) : (
+                          <Play className="w-3 h-3 fill-current" />
+                        )}
+                        
+                        <span>
+                          {loadingAudioId === m.id ? "Loading..." : playingMessageId === m.id ? "Pause" : "Listen"}
+                        </span>
+                      </button>
+                      
+                      {/* Playing Status Indicator */}
+                      {playingMessageId === m.id && (
+                         <span className="text-[10px] text-purple-300 capitalize animate-in fade-in">
+                           Playing in {audioLanguage}
+                         </span>
+                      )}
+                    </div>
                 )}
               </div>
             </div>
@@ -1501,6 +1628,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   onEnded={() => setIsPlaying(false)} 
   onError={() => setIsPlaying(false)}
 />
+<audio ref={audioRef} className="hidden" />
     </div>
   );
 };
