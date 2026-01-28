@@ -230,33 +230,28 @@ useEffect(() => {
 
   // Load Paragraphs
   // Load Paragraphs & Merge with User Progress
+  // Load Paragraphs & Merge with User Progress & RESTORE CURSOR
   useEffect(() => {
     const loadParagraphs = async () => {
       if (!selectedChapter) return;
       
-      // 1. Fetch the raw content (Text/Images)
+      // 1. Fetch raw content
       const { data: rawParagraphs, error: paraError } = await supabase
         .from("paragraphs")
         .select("*")
         .eq("chapter_id", selectedChapter.id)
         .order("order_index", { ascending: true });
 
-      if (paraError) {
-        console.error("Error loading paragraphs:", paraError);
-        return;
-      }
+      if (paraError) return;
 
-      // 2. Fetch YOUR progress for these paragraphs
-      // We only need to check if the user is logged in
+      // 2. Fetch User Progress
       let completedIds = new Set();
-      
       if (user) {
-        const { data: progressData, error: progError } = await supabase
+        const { data: progressData } = await supabase
           .from("user_progress")
           .select("current_block_id")
           .eq("user_id", user.id)
           .eq("is_completed", true)
-          // Optimization: Only look for IDs that belong to this chapter
           .in("current_block_id", rawParagraphs.map(p => p.id));
 
         if (progressData) {
@@ -264,19 +259,36 @@ useEffect(() => {
         }
       }
 
-      // 3. Merge them together
+      // 3. Merge
       const mergedParagraphs = rawParagraphs.map(p => ({
         ...p,
-        // Override the default is_completed with the REAL user data
         is_completed: completedIds.has(p.id) 
       }));
 
       setParagraphs(mergedParagraphs || []);
       setIsGenerating(false);
+
+      // --- 4. NEW: RESTORE ACTIVE STATE (The Fix) ---
+      // Find the first paragraph that is NOT completed
+      const resumeParagraph = mergedParagraphs.find(p => !p.is_completed);
+      
+      if (resumeParagraph) {
+        setActiveParagraphId(resumeParagraph.id);
+        
+        // Optional: Scroll to it automatically after a tiny delay
+        setTimeout(() => {
+            const el = document.getElementById(`para-${resumeParagraph.id}`);
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 500);
+      } else {
+        // If all are done, set to null (Chapter Complete)
+        setActiveParagraphId(null); 
+      }
+      // ---------------------------------------------
     };
 
     loadParagraphs();
-  }, [selectedChapter, user]); // <--- Added 'user' to dependency so it re-runs on login
+  }, [selectedChapter, user]);// <--- Added 'user' to dependency so it re-runs on login
 
     useEffect(() => {
     // 1. Get the session immediately
