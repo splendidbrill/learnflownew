@@ -805,7 +805,56 @@ const isContentWorthExplaining = (text: string, type?: string) => {
   // A. RENDER DASHBOARD (Missing in previous response)
   const renderDashboard = () => (
     <div className="h-full w-full overflow-y-auto p-10 relative">
+      {bookStatus !== 'pending' && (
+        <button 
+          onClick={() => {
+            setScheduleMode('edit');
+            setIsScheduleModalOpen(true);
+          }}
+          className="absolute top-6 left-6 p-2 rounded-xl border border-blue-500/30 text-blue-400 hover:bg-blue-500/10 hover:text-blue-300 transition-all group z-50"
+          title="Edit Study Schedule"
+        >
+          <Clock className="w-5 h-5 group-hover:scale-110 transition-transform" />
+          <span className="absolute top-0 right-0 w-2 h-2 bg-green-500 rounded-full"></span>
+        </button>
+      )}
       <div className="max-w-5xl mx-auto pb-20">
+
+        {bookStatus === 'completed' && (
+          <div className="absolute top-0 right-0 hidden md:flex items-center gap-4 animate-in fade-in slide-in-from-right-4 duration-700">
+            <div className="bg-[#1e0a3c] border border-white/10 p-4 rounded-2xl shadow-xl flex items-center gap-4">
+              <div className="text-right">
+                <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold">Total Progress</p>
+                <p className="text-2xl font-bold text-white">{bookProgress}%</p>
+              </div>
+              
+              {/* Circular Progress Indicator */}
+              <div className="relative w-12 h-12">
+                <svg className="w-full h-full -rotate-90" viewBox="0 0 36 36">
+                  {/* Background Circle */}
+                  <path
+                    className="text-gray-800"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  />
+                  {/* Progress Circle */}
+                  <path
+                    className="text-blue-500 drop-shadow-[0_0_10px_rgba(59,130,246,0.5)]"
+                    strokeDasharray={`${bookProgress}, 100`}
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="text-center mb-12">
           <div className="w-16 h-16 bg-purple-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4">
             <BookOpen className="w-8 h-8 text-purple-400" />
@@ -1120,7 +1169,13 @@ const isContentWorthExplaining = (text: string, type?: string) => {
       // Update URL without reloading page
       window.history.pushState(null, '', `?chapterId=${chapter.id}`);
     }}
-    className={`w-full flex items-center gap-3 p-3 ... (rest of class)`}
+    className={`w-full text-left p-3 rounded-xl text-sm mb-2 transition-all duration-300 relative overflow-hidden group
+      ${selectedChapter?.id === chapter.id 
+        // ACTIVE STATE: Cyan Ring + Glow + Subtle Background
+        ? "text-white bg-white/5 ring-1 ring-cyan-400 shadow-[0_0_15px_rgba(34,211,238,0.15)]" 
+        // INACTIVE STATE
+        : "text-gray-400 hover:bg-white/5 hover:text-white border border-transparent"}
+    `}
   >
 
               <span className="mr-2 font-mono text-xs opacity-50">

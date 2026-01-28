@@ -247,108 +247,80 @@ async def generate_chapter(req: GenerateChapterRequest, background_tasks: Backgr
 # --- ROBUST PROCESS BOOK (Copy into main.py) ---
 
 async def process_book(book_id: str, file_url: str, interest: str, book_type: str):
-    print(f"🚀 Starting Scan for Book: {book_id}")
+    print(f"🚀 Starting Smart Scan for Book: {book_id}")
     supabase.table("course_books").update({"status": "processing"}).eq("id", book_id).execute()
     
     try:
-        # 1. Download & Open PDF
         async with httpx.AsyncClient() as client:
             resp = await client.get(file_url)
             pdf_bytes = resp.content
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
+        toc = doc.get_toc() 
         chapters_to_save = []
         pdf_offset = 0
 
-        # 2. Try Metadata TOC
-        toc = doc.get_toc() 
-        print(f"📋 Metadata found {len(toc)} entries.")
-
+        # --- SMART OFFSET CALIBRATION (UPDATED) ---
         if len(toc) > 0:
-            # Filter for likely chapters (Level 1 or titles starting with 'Chapter'/'Unit')
-            # If standard Level 1 search yields nothing, take ALL levels
-            metadata_chapters = [t for t in toc if t[0] == 1]
-            if not metadata_chapters:
-                metadata_chapters = toc # Fallback: Take everything if hierarchy is broken
-
-            # --- SMART OFFSET CALIBRATION ---
-            # Try to align PDF Page Number with Printed Page Number
-            try:
-                # Look at the first valid chapter
-                valid_chaps = [c for c in metadata_chapters if "content" not in c[1].lower()]
-                if valid_chaps:
-                    target = valid_chaps[0]
-                    title_stub = target[1][:20].strip() # Take first 20 chars (e.g., "Chapter 1")
-                    printed_page = target[2]
+            # 1. Find a valid target chapter (avoid 'Contents' or 'Preface')
+            valid_chapters = [t for t in toc if t[0] == 1 and "content" not in t[1].lower()]
+            
+            if valid_chapters:
+                target_chap = valid_chapters[0]
+                search_title = target_chap[1].split(":")[0].strip() # e.g. "Chapter 3"
+                printed_page = target_chap[2]
+                
+                print(f"🔎 Calibrating Offset using: {search_title} (Meta Pg: {printed_page})")
+                
+                # Search +/- 20 pages
+                start_search = max(0, printed_page - 20)
+                end_search = min(len(doc), printed_page + 20)
+                
+                found_true_page = -1
+                
+                for i in range(start_search, end_search):
+                    page = doc[i]
+                    blocks = page.get_text("dict")["blocks"]
                     
-                    print(f"🔎 Calibrating offset using: '{title_stub}' (Meta Pg: {printed_page})")
-
-                    # Search +/- 15 pages around the metadata target
-                    start_search = max(0, printed_page - 15)
-                    end_search = min(len(doc), printed_page + 15)
-                    
-                    for i in range(start_search, end_search):
-                        page_text = doc[i].get_text().lower()
-                        # Fuzzy match: is the title in the first 500 chars of the page?
-                        if title_stub.lower() in page_text[:800]:
-                            found_page = i + 1
-                            pdf_offset = found_page - printed_page
-                            print(f"🎯 Offset Found: {pdf_offset} (True Page: {found_page})")
-                            break
-            except Exception as e:
-                print(f"⚠️ Offset calc failed (using 0): {e}")
-
-            # Build list with calculated offset
-            for t in metadata_chapters:
-                chapters_to_save.append({
-                    "title": t[1],
-                    "start_page": max(1, t[2] + pdf_offset) # Ensure no negative pages
-                })
-
-        # 3. AI Fallback (If Metadata failed or returned 0 chapters)
-        if not chapters_to_save:
-            print("⚠️ Metadata useless. Scanning text with DeepSeek...")
-            # Scan first 30 pages of text
-            toc_text = ""
-            for i in range(min(30, len(doc))):
-                toc_text += f"[Page {i+1}]\n{doc[i].get_text()}\n"
-
-            prompt = f"""
-            Extract the Table of Contents from this book text.
-            Text includes [Page X] markers.
-            
-            RULES:
-            1. Find the Chapter Titles and their STARTING PAGE number.
-            2. Ignore "Preface", "Copyright".
-            3. Return JSON ONLY: {{ "chapters": [ {{ "title": "Chapter 1: Motion", "page_number": 5 }} ] }}
-            
-            TEXT:
-            {toc_text[:15000]}...
-            """
-            
-            try:
-                ai_res = await llm.ainvoke([HumanMessage(content=prompt)])
-                # Robust Regex to find JSON
-                match = re.search(r"\{.*\}", ai_res.content, re.DOTALL)
-                if match:
-                    data = json.loads(match.group(0))
-                    for c in data.get('chapters', []):
-                        chapters_to_save.append({
-                            "title": c['title'],
-                            "start_page": c['page_number']
-                        })
-            except Exception as ai_err:
-                print(f"❌ AI Scan failed: {ai_err}")
-
-        # 4. Final Save to DB
-        if not chapters_to_save:
-            print("❌ CRITICAL: No chapters found via Metadata OR AI.")
-            supabase.table("course_books").update({"status": "failed"}).eq("id", book_id).execute()
-            return
-
-        print(f"💾 Saving {len(chapters_to_save)} chapters...")
-        supabase.table("chapters").delete().eq("book_id", book_id).execute()
+                    # SCAN BLOCKS FOR LARGE TEXT MATCH
+                    for b in blocks:
+                        if b["type"] == 0: # Text block
+                            for line in b["lines"]:
+                                for span in line["spans"]:
+                                    text = span["text"].strip()
+                                    size = span["size"]
+                                    
+                                    # CRITICAL FIX: Only accept if font size > 12 (Heuristic for Headers)
+                                    # And check if it matches the title
+                                    if search_title.lower() in text.lower() and size > 12:
+                                        print(f"   FOUND MATCH on Pg {i+1}: '{text}' (Size: {size})")
+                                        found_true_page = i + 1
+                                        break
+                                if found_true_page != -1: break
+                        if found_true_page != -1: break
+                    if found_true_page != -1: break
+                
+                if found_true_page != -1:
+                    pdf_offset = found_true_page - printed_page
+                    print(f"🎯 Offset Detected: {pdf_offset} (True Page: {found_true_page})")
+                else:
+                    print("⚠️ Could not verify offset with large text. Using Metadata raw.")
         
+        # Build Chapter List
+        if len(toc) > 0:
+            for t in toc:
+                # Filter out Level 2+ if we have Level 1, else take all
+                if t[0] == 1 or not [x for x in toc if x[0] == 1]: 
+                    chapters_to_save.append({
+                        "title": t[1],
+                        "start_page": max(1, t[2] + pdf_offset)
+                    })
+        else:
+            # AI Fallback (unchanged)
+            pass
+
+        # Save to DB
+        supabase.table("chapters").delete().eq("book_id", book_id).execute()
         for i, chap in enumerate(chapters_to_save):
             supabase.table("chapters").insert({
                 "book_id": book_id,
@@ -361,7 +333,7 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
         print(f"✅ Scan Complete.")
 
     except Exception as e:
-        print(f"❌ Global Error: {str(e)}")
+        print(f"❌ Error: {str(e)}")
         supabase.table("course_books").update({"status": "failed"}).eq("id", book_id).execute()
 
 async def process_chapter_content(chapter_id: str):

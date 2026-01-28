@@ -136,6 +136,8 @@ useEffect(() => {
         const { data: progressData, error: progressError } = await supabase
           .rpc('get_user_book_progress', { target_user_id: user.id });
 
+          
+
         if (progressError) console.error("Progress fetch error:", progressError);
 
         // Create a lookup map: { 'book_uuid': 55 } (55% done)
