@@ -9,6 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from fastapi.responses import FileResponse
+from services.tts_service import generate_audio
+
 
 # --- IMPORTS ---
 from langchain_openai import ChatOpenAI 
@@ -447,6 +450,27 @@ async def process_chapter_content(chapter_id: str):
 
     except Exception as e:
         print(f"❌ Error generating chapter: {str(e)}")
+class TTSRequest(BaseModel):
+    text: str
+    language: str = "english" # english, hindi, spanish, chinese
+
+@app.post("/api/speak")
+async def speak_endpoint(req: TTSRequest):
+    print(f"🔊 Generating Audio in {req.language}")
+    
+    # We pass the global 'llm' object we created in main.py
+    file_path, translated_text = await generate_audio(req.text, req.language, llm)
+    
+    if not file_path:
+        return {"error": "Failed to generate audio"}
+
+    # Return the file directly as a stream
+    # We also send the translated text in a header if you want to display it
+    return FileResponse(
+        file_path, 
+        media_type="audio/mpeg", 
+        headers={"X-Translated-Text": str(translated_text.encode('utf-8'))} # Optional: tricky with headers
+    )
 
 if __name__ == "__main__":
     import uvicorn

@@ -19,3 +19,5 @@ qstash
 google-generativeai
 huggingface_hub
 openai 
+edge-tts
+aiofiles

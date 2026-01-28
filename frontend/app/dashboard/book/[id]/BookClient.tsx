@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useRef } from "react";
-import { Suspense } from "react"; 
+import { Suspense } from "react";
 
 import { useRouter, useSearchParams } from "next/navigation"; // <--- Add useSearchParams
 import {
@@ -18,7 +18,7 @@ import {
   Flame,
   PieChart,
   Clock,
-  FileText,
+  FileText,Volume2 ,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { ScheduleModal } from "../../components/ScheduleModal"; // Ensure this path is correct
@@ -71,16 +71,21 @@ interface Book {
 
 export const BookClient: React.FC<BookClientProps> = (props) => {
   return (
-    <Suspense fallback={<div className="h-screen bg-[#13002b] text-white flex items-center justify-center">Loading...</div>}>
+    <Suspense
+      fallback={
+        <div className="h-screen bg-[#13002b] text-white flex items-center justify-center">
+          Loading...
+        </div>
+      }
+    >
       <BookClientContent {...props} />
     </Suspense>
   );
 };
 
-
 export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   const router = useRouter();
-    const searchParams = useSearchParams();
+  const searchParams = useSearchParams();
   const supabase = createClient();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -93,13 +98,18 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     null,
   );
 
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [selectedLanguage, setSelectedLanguage] = useState("english"); // Add a dropdown somewhere
+
   const [bookXp, setBookXp] = useState(0);
   const [bookLevelXp, setBookLevelXp] = useState(0);
 
   // Stats State
   const [userXp, setUserXp] = useState(0);
   const [bookProgress, setBookProgress] = useState(0);
-   const [chapterProgress, setChapterProgress] = useState(0);
+  const [chapterProgress, setChapterProgress] = useState(0);
 
   // UI State
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -129,66 +139,64 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     fetchStats();
   }, []);
 
-
- const fetchStats = async (currentUserId?: string) => {
-  // 1. Get User ID
-  let uid = currentUserId;
-  if (!uid) {
+  const fetchStats = async (currentUserId?: string) => {
+    // 1. Get User ID
+    let uid = currentUserId;
+    if (!uid) {
       const { data } = await supabase.auth.getUser();
       uid = data.user?.id;
-  }
-  if (!uid) return;
+    }
+    if (!uid) return;
 
-  // 2. Count TOTAL paragraphs in book
-  const { count: total } = await supabase
-    .from('paragraphs')
-    .select('*', { count: 'exact', head: true })
-    .eq('book_id', bookId);
+    // 2. Count TOTAL paragraphs in book
+    const { count: total } = await supabase
+      .from("paragraphs")
+      .select("*", { count: "exact", head: true })
+      .eq("book_id", bookId);
 
-  // 3. Count COMPLETED paragraphs for USER in THIS BOOK
-  const { count: completed } = await supabase
-    .from('user_progress')
-    .select('*', { count: 'exact', head: true })
-    .eq('book_id', bookId)
-    .eq('user_id', uid)
-    .eq('is_completed', true);
+    // 3. Count COMPLETED paragraphs for USER in THIS BOOK
+    const { count: completed } = await supabase
+      .from("user_progress")
+      .select("*", { count: "exact", head: true })
+      .eq("book_id", bookId)
+      .eq("user_id", uid)
+      .eq("is_completed", true);
 
-  // 4. Update UI
-  if (total && total > 0) {
-    setBookProgress(Math.round(((completed || 0) / total) * 100));
-  }
+    // 4. Update UI
+    if (total && total > 0) {
+      setBookProgress(Math.round(((completed || 0) / total) * 100));
+    }
 
-  // --- CALCULATE BOOK XP (Local) ---
-  // 10 XP per completed paragraph
-  const localXp = (completed || 0) * 10;
-  setBookLevelXp(localXp);
-};
+    // --- CALCULATE BOOK XP (Local) ---
+    // 10 XP per completed paragraph
+    const localXp = (completed || 0) * 10;
+    setBookLevelXp(localXp);
+  };
 
-useEffect(() => {
+  useEffect(() => {
     if (!paragraphs || paragraphs.length === 0) {
       setChapterProgress(0);
       return;
     }
 
     // Count how many paragraphs in THIS specific chapter are done
-    const completedCount = paragraphs.filter(p => p.is_completed).length;
+    const completedCount = paragraphs.filter((p) => p.is_completed).length;
     const totalCount = paragraphs.length;
-    
+
     // Calculate %
     const percent = Math.round((completedCount / totalCount) * 100);
     setChapterProgress(percent);
-    
   }, [paragraphs]);
 
   useEffect(() => {
-  const chapterIdFromUrl = searchParams.get('chapterId');
-  console.log("URL PARAM:", chapterIdFromUrl); // <--- CHECK THIS LOG
-  
-  if (chapters.length > 0 && chapterIdFromUrl && !selectedChapter) {
-    const match = chapters.find(c => c.id === chapterIdFromUrl);
-    if (match) setSelectedChapter(match);
-  }
-}, [chapters, searchParams, selectedChapter]);
+    const chapterIdFromUrl = searchParams.get("chapterId");
+    console.log("URL PARAM:", chapterIdFromUrl); // <--- CHECK THIS LOG
+
+    if (chapters.length > 0 && chapterIdFromUrl && !selectedChapter) {
+      const match = chapters.find((c) => c.id === chapterIdFromUrl);
+      if (match) setSelectedChapter(match);
+    }
+  }, [chapters, searchParams, selectedChapter]);
 
   const fetchBookData = async () => {
     if (!bookId) return;
@@ -234,7 +242,7 @@ useEffect(() => {
   useEffect(() => {
     const loadParagraphs = async () => {
       if (!selectedChapter) return;
-      
+
       // 1. Fetch raw content
       const { data: rawParagraphs, error: paraError } = await supabase
         .from("paragraphs")
@@ -252,17 +260,20 @@ useEffect(() => {
           .select("current_block_id")
           .eq("user_id", user.id)
           .eq("is_completed", true)
-          .in("current_block_id", rawParagraphs.map(p => p.id));
+          .in(
+            "current_block_id",
+            rawParagraphs.map((p) => p.id),
+          );
 
         if (progressData) {
-          progressData.forEach(p => completedIds.add(p.current_block_id));
+          progressData.forEach((p) => completedIds.add(p.current_block_id));
         }
       }
 
       // 3. Merge
-      const mergedParagraphs = rawParagraphs.map(p => ({
+      const mergedParagraphs = rawParagraphs.map((p) => ({
         ...p,
-        is_completed: completedIds.has(p.id) 
+        is_completed: completedIds.has(p.id),
       }));
 
       setParagraphs(mergedParagraphs || []);
@@ -270,41 +281,41 @@ useEffect(() => {
 
       // --- 4. NEW: RESTORE ACTIVE STATE (The Fix) ---
       // Find the first paragraph that is NOT completed
-      const resumeParagraph = mergedParagraphs.find(p => !p.is_completed);
-      
+      const resumeParagraph = mergedParagraphs.find((p) => !p.is_completed);
+
       if (resumeParagraph) {
         setActiveParagraphId(resumeParagraph.id);
-        
+
         // Optional: Scroll to it automatically after a tiny delay
         setTimeout(() => {
-            const el = document.getElementById(`para-${resumeParagraph.id}`);
-            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          const el = document.getElementById(`para-${resumeParagraph.id}`);
+          if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
         }, 500);
       } else {
         // If all are done, set to null (Chapter Complete)
-        setActiveParagraphId(null); 
+        setActiveParagraphId(null);
       }
       // ---------------------------------------------
     };
 
     loadParagraphs();
-  }, [selectedChapter, user]);// <--- Added 'user' to dependency so it re-runs on login
+  }, [selectedChapter, user]); // <--- Added 'user' to dependency so it re-runs on login
 
-    useEffect(() => {
+  useEffect(() => {
     // 1. Get the session immediately
     supabase.auth.getUser().then(({ data }) => {
       if (data.user) {
         setUser(data.user);
         // 2. ONLY fetch stats once we have the user
         fetchStatsForUser(data.user.id);
-         fetchStats(data.user.id);
+        fetchStats(data.user.id);
       }
     });
   }, []);
 
   // Load Chat History
   // Find your chat loading useEffect
- // RELIABLE CHAT LOADING
+  // RELIABLE CHAT LOADING
   useEffect(() => {
     const loadChatHistory = async () => {
       // 1. Strict Guard: Don't fetch if no chapter or no user
@@ -327,8 +338,8 @@ useEffect(() => {
             id: m.id,
             role: m.role as any,
             content: m.content,
-            imageUrl: m.imageUrl // Ensure your DB has this column if you use images in chat
-          }))
+            imageUrl: m.imageUrl, // Ensure your DB has this column if you use images in chat
+          })),
         );
       }
     };
@@ -337,36 +348,36 @@ useEffect(() => {
   }, [selectedChapter?.id]); // <--- Key Change: Depend on the ID string, not the object // <--- Dependency is correct
 
   // Helper: Decides if a paragraph is "Real Content" or just "Noise"
-// Helper: Decides if a paragraph is "Real Content" or just "Noise"
-const isContentWorthExplaining = (text: string, type?: string) => {
-  // Always explain images/code
-  if (type === 'image' || type === 'code') return true;
-  
-  const cleanText = text.trim();
-  
-  // 1. Catches "Activity ______ 5.2" (Any amount of underscores)
-  if (/^Activity\s*[_\.]+\s*\d+/i.test(cleanText)) return false;
-  
-  // 2. Catches "Fig. 6.3" or "Figure 6.3"
-  if (/^Fig|^Figure|^Table|^Source/i.test(cleanText)) return false;
+  // Helper: Decides if a paragraph is "Real Content" or just "Noise"
+  const isContentWorthExplaining = (text: string, type?: string) => {
+    // Always explain images/code
+    if (type === "image" || type === "code") return true;
 
-  // 3. Catches "(a) (b)" or simple labels
-  if (/^(\([a-z]\)\s*)+$/i.test(cleanText)) return false;
+    const cleanText = text.trim();
 
-  // 4. Catches pure numbers or very short labels
-  if (cleanText.length < 20) return false;
+    // 1. Catches "Activity ______ 5.2" (Any amount of underscores)
+    if (/^Activity\s*[_\.]+\s*\d+/i.test(cleanText)) return false;
 
-  return true; 
-};
+    // 2. Catches "Fig. 6.3" or "Figure 6.3"
+    if (/^Fig|^Figure|^Table|^Source/i.test(cleanText)) return false;
 
-// Handle Resizing Logic
+    // 3. Catches "(a) (b)" or simple labels
+    if (/^(\([a-z]\)\s*)+$/i.test(cleanText)) return false;
+
+    // 4. Catches pure numbers or very short labels
+    if (cleanText.length < 20) return false;
+
+    return true;
+  };
+
+  // Handle Resizing Logic
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizing) return;
-      
+
       // Calculate new width (Window Width - Mouse X Position)
       const newWidth = window.innerWidth - e.clientX;
-      
+
       // Constraints: Min 300px, Max 800px
       if (newWidth > 300 && newWidth < 800) {
         setChatWidth(newWidth);
@@ -375,45 +386,45 @@ const isContentWorthExplaining = (text: string, type?: string) => {
 
     const handleMouseUp = () => {
       setIsResizing(false);
-      document.body.style.cursor = 'default'; // Reset cursor
+      document.body.style.cursor = "default"; // Reset cursor
     };
 
     if (isResizing) {
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = 'col-resize'; // Force cursor while dragging
-      document.body.style.userSelect = 'none';   // Prevent text selection while dragging
+      window.addEventListener("mousemove", handleMouseMove);
+      window.addEventListener("mouseup", handleMouseUp);
+      document.body.style.cursor = "col-resize"; // Force cursor while dragging
+      document.body.style.userSelect = "none"; // Prevent text selection while dragging
     }
 
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = 'default';
-      document.body.style.userSelect = 'auto';
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+      document.body.style.cursor = "default";
+      document.body.style.userSelect = "auto";
     };
   }, [isResizing]);
 
   useEffect(() => {
-    const chapterIdFromUrl = searchParams.get('chapterId');
-    
+    const chapterIdFromUrl = searchParams.get("chapterId");
+
     // Only run if we have chapters loaded and a URL param exists, but no chapter selected yet
     if (chapters.length > 0 && chapterIdFromUrl && !selectedChapter) {
       console.log("🔗 Restoring Chapter from URL:", chapterIdFromUrl);
-      const match = chapters.find(c => c.id === chapterIdFromUrl);
+      const match = chapters.find((c) => c.id === chapterIdFromUrl);
       if (match) {
         setSelectedChapter(match);
       }
     }
   }, [chapters, searchParams, selectedChapter]);
 
-   const fetchStatsForUser = async (userId: string) => {
+  const fetchStatsForUser = async (userId: string) => {
     // 1. Get XP
     const { data: profile } = await supabase
-      .from('profiles')
-      .select('xp')
-      .eq('id', userId)
+      .from("profiles")
+      .select("xp")
+      .eq("id", userId)
       .single();
-      
+
     if (profile) {
       console.log("✅ XP Loaded:", profile.xp);
       setUserXp(profile.xp || 0);
@@ -423,28 +434,28 @@ const isContentWorthExplaining = (text: string, type?: string) => {
 
     // 2. Get Progress
     const { count: total } = await supabase
-      .from('paragraphs')
-      .select('*', { count: 'exact', head: true })
-      .eq('book_id', bookId);
+      .from("paragraphs")
+      .select("*", { count: "exact", head: true })
+      .eq("book_id", bookId);
 
     const { count: completed } = await supabase
-      .from('user_progress')
-      .select('*', { count: 'exact', head: true })
-      .eq('book_id', bookId)
-      .eq('user_id', userId)
-      .eq('is_completed', true);
+      .from("user_progress")
+      .select("*", { count: "exact", head: true })
+      .eq("book_id", bookId)
+      .eq("user_id", userId)
+      .eq("is_completed", true);
 
     if (total && total > 0) {
       setBookProgress(Math.round(((completed || 0) / total) * 100));
     }
   };
 
-   useEffect(() => {
-    const chapterIdFromUrl = searchParams.get('chapterId');
-    
+  useEffect(() => {
+    const chapterIdFromUrl = searchParams.get("chapterId");
+
     // Only run if we have chapters loaded and a URL param exists
     if (chapters.length > 0 && chapterIdFromUrl) {
-      const match = chapters.find(c => c.id === chapterIdFromUrl);
+      const match = chapters.find((c) => c.id === chapterIdFromUrl);
       if (match) {
         setSelectedChapter(match);
       }
@@ -552,7 +563,7 @@ const isContentWorthExplaining = (text: string, type?: string) => {
   };
 
   // 4. CHAT HANDLER
- const handleSendMessage = async (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || !selectedChapter) return;
 
@@ -560,22 +571,31 @@ const isContentWorthExplaining = (text: string, type?: string) => {
     const tempId = Date.now().toString();
 
     // 1. UPDATE UI IMMEDIATELY
-    const userMessage: Message = { id: tempId, role: "user", content: userText };
+    const userMessage: Message = {
+      id: tempId,
+      role: "user",
+      content: userText,
+    };
     setMessages((prev) => [...prev, userMessage]);
     setInput(""); // Clear input
 
     // Shortcut Logic
     const cleanCommand = userText.toLowerCase().replace(/[^a-z]/g, "");
-    if (activeParagraphId && ["yes", "next", "ok", "continue"].includes(cleanCommand)) {
+    if (
+      activeParagraphId &&
+      ["yes", "next", "ok", "continue"].includes(cleanCommand)
+    ) {
       setTimeout(() => handleNextParagraph(), 500);
-      return; 
+      return;
     }
 
     setIsAiThinking(true);
 
     try {
       // 2. FORCE GET USER
-      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      const {
+        data: { user: currentUser },
+      } = await supabase.auth.getUser();
       if (!currentUser?.id) throw new Error("User not logged in");
 
       // 3. SAVE USER MESSAGE TO DB (AWAIT THIS!)
@@ -603,8 +623,8 @@ const isContentWorthExplaining = (text: string, type?: string) => {
           chapterId: selectedChapter.id,
           currentParagraphId: activeParagraphId,
           userResponse: userText,
-          userId: currentUser.id, 
-          bookId: bookId,   
+          userId: currentUser.id,
+          bookId: bookId,
         }),
       });
 
@@ -612,7 +632,10 @@ const isContentWorthExplaining = (text: string, type?: string) => {
 
       // 5. STREAM AI RESPONSE
       const aiMessageId = (Date.now() + 1).toString();
-      setMessages((prev) => [...prev, { id: aiMessageId, role: "assistant", content: "" }]);
+      setMessages((prev) => [
+        ...prev,
+        { id: aiMessageId, role: "assistant", content: "" },
+      ]);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -626,13 +649,21 @@ const isContentWorthExplaining = (text: string, type?: string) => {
         accumulatedText += chunkValue;
 
         if (accumulatedText.toLowerCase().includes("[next]")) {
-           const cleanText = accumulatedText.replace(/\[next\]/gi, "").trim();
-           setMessages((prev) => prev.map((msg) => msg.id === aiMessageId ? { ...msg, content: cleanText } : msg));
-           handleNextParagraph();
-           return; 
+          const cleanText = accumulatedText.replace(/\[next\]/gi, "").trim();
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === aiMessageId ? { ...msg, content: cleanText } : msg,
+            ),
+          );
+          handleNextParagraph();
+          return;
         }
 
-        setMessages((prev) => prev.map((msg) => msg.id === aiMessageId ? { ...msg, content: accumulatedText } : msg));
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === aiMessageId ? { ...msg, content: accumulatedText } : msg,
+          ),
+        );
       }
 
       // 6. SAVE AI RESPONSE TO DB (AWAIT THIS!)
@@ -648,7 +679,6 @@ const isContentWorthExplaining = (text: string, type?: string) => {
         if (aiMsgError) console.error("❌ AI Save Failed:", aiMsgError);
         else console.log("✅ AI Message Saved");
       }
-
     } catch (error: any) {
       console.error("Chat Error:", error);
       // Optional: Add visual error state
@@ -663,32 +693,47 @@ const isContentWorthExplaining = (text: string, type?: string) => {
 
     // 1. Current Paragraph Cleanup
     // (Mark current as done in UI)
-    setParagraphs((prev) => 
-      prev.map((p) => p.id === activeParagraphId ? { ...p, is_completed: true } : p)
+    setParagraphs((prev) =>
+      prev.map((p) =>
+        p.id === activeParagraphId ? { ...p, is_completed: true } : p,
+      ),
     );
 
     // 2. Find the NEXT SUBSTANTIVE Paragraph
-    const currentIndex = paragraphs.findIndex((p) => p.id === activeParagraphId);
+    const currentIndex = paragraphs.findIndex(
+      (p) => p.id === activeParagraphId,
+    );
     let nextIndex = currentIndex + 1;
     let nextPara = paragraphs[nextIndex];
 
     // --- SMART SKIP LOOP ---
     // While there is a next paragraph AND it is "Noise"
-    while (nextPara && !isContentWorthExplaining(nextPara.content, nextPara.type)) {
+    while (
+      nextPara &&
+      !isContentWorthExplaining(nextPara.content, nextPara.type)
+    ) {
       console.log(`Skipping noise: ${nextPara.content.substring(0, 20)}...`);
-      
+
       // Mark noise as completed in DB immediately (Background)
-      supabase.from("user_progress").upsert({
-        user_id: user.id,
-        book_id: bookId,
-        current_block_id: nextPara.id,
-        is_completed: true,
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'user_id, book_id, current_block_id' }).then(); // .then() to fire-and-forget
+      supabase
+        .from("user_progress")
+        .upsert(
+          {
+            user_id: user.id,
+            book_id: bookId,
+            current_block_id: nextPara.id,
+            is_completed: true,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id, book_id, current_block_id" },
+        )
+        .then(); // .then() to fire-and-forget
 
       // Update Local State for the skipped item
-      setParagraphs((prev) => 
-        prev.map((p) => p.id === nextPara.id ? { ...p, is_completed: true } : p)
+      setParagraphs((prev) =>
+        prev.map((p) =>
+          p.id === nextPara.id ? { ...p, is_completed: true } : p,
+        ),
       );
 
       // Move to next
@@ -701,33 +746,43 @@ const isContentWorthExplaining = (text: string, type?: string) => {
     if (nextPara) {
       saveProgressToDb(activeParagraphId);
       setActiveParagraphId(nextPara.id);
-      
+
       // Scroll to it
       setTimeout(() => {
         const el = document.getElementById(`para-${nextPara.id}`);
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
       }, 100);
 
       // Trigger AI ONLY for this real paragraph
       triggerExplanation(nextPara.id);
-      
+
       // Save Progress for the Real Paragraph
       await saveProgressToDb(nextPara.id); // See helper function below
     } else {
       // End of Chapter
       setActiveParagraphId(null);
-      setMessages(prev => [...prev, {id: Date.now().toString(), role: 'assistant', content: "🎉 Chapter completed!"}]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          role: "assistant",
+          content: "🎉 Chapter completed!",
+        },
+      ]);
     }
   };
 
   // Helper to keep code clean
- // Replace your existing saveProgressToDb with this robust version
+  // Replace your existing saveProgressToDb with this robust version
   const saveProgressToDb = async (blockId: string) => {
     console.log("🔍 Attempting to save progress...");
 
     // 1. Force Fetch User (Do not rely on state)
-    const { data: { user: currentUser }, error: authError } = await supabase.auth.getUser();
-    
+    const {
+      data: { user: currentUser },
+      error: authError,
+    } = await supabase.auth.getUser();
+
     if (authError || !currentUser) {
       alert("❌ SAVE FAILED: You are not logged in!");
       console.error("Auth Error:", authError);
@@ -737,14 +792,19 @@ const isContentWorthExplaining = (text: string, type?: string) => {
     console.log("👤 User found:", currentUser.id);
 
     // 2. Try to Save
-    const { data, error } = await supabase.from("user_progress").upsert({
-      user_id: currentUser.id,
-      book_id: bookId,
-      current_block_id: blockId,
-      is_completed: true,
-      updated_at: new Date().toISOString()
-    }, { onConflict: 'user_id, book_id, current_block_id' })
-    .select();
+    const { data, error } = await supabase
+      .from("user_progress")
+      .upsert(
+        {
+          user_id: currentUser.id,
+          book_id: bookId,
+          current_block_id: blockId,
+          is_completed: true,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id, book_id, current_block_id" },
+      )
+      .select();
 
     if (error) {
       alert(`❌ DB ERROR: ${error.message}`);
@@ -756,9 +816,12 @@ const isContentWorthExplaining = (text: string, type?: string) => {
 
     // 3. Save XP
     const newXp = (userXp || 0) + 10;
-    const { error: xpError } = await supabase.from("profiles").update({ xp: newXp }).eq("id", currentUser.id);
+    const { error: xpError } = await supabase
+      .from("profiles")
+      .update({ xp: newXp })
+      .eq("id", currentUser.id);
     if (xpError) console.error("XP Error:", xpError);
-    
+
     fetchStats();
   };
 
@@ -767,10 +830,12 @@ const isContentWorthExplaining = (text: string, type?: string) => {
 
     try {
       // 1. FORCE GET USER (Ensure we have ID for saving later)
-      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      const {
+        data: { user: currentUser },
+      } = await supabase.auth.getUser();
       if (!currentUser?.id) {
-         console.error("Cannot explain: User not logged in");
-         return;
+        console.error("Cannot explain: User not logged in");
+        return;
       }
 
       // 2. CALL API
@@ -779,9 +844,15 @@ const isContentWorthExplaining = (text: string, type?: string) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           // Hidden context message for the AI
-          messages: [{ id: Date.now().toString(), role: "user", content: "Explain this paragraph." }], 
+          messages: [
+            {
+              id: Date.now().toString(),
+              role: "user",
+              content: "Explain this paragraph.",
+            },
+          ],
           chapterId: selectedChapter!.id,
-          currentParagraphId: paraId, 
+          currentParagraphId: paraId,
           userResponse: "Explain",
           userId: currentUser.id,
           bookId: bookId,
@@ -792,7 +863,10 @@ const isContentWorthExplaining = (text: string, type?: string) => {
 
       // 3. UPDATE UI (Stream)
       const aiMessageId = (Date.now() + 1).toString();
-      setMessages((prev) => [...prev, { id: aiMessageId, role: "assistant", content: "" }]);
+      setMessages((prev) => [
+        ...prev,
+        { id: aiMessageId, role: "assistant", content: "" },
+      ]);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -804,39 +878,46 @@ const isContentWorthExplaining = (text: string, type?: string) => {
         done = doneReading;
         const chunkValue = decoder.decode(value, { stream: true });
         accumulatedText += chunkValue;
-        
+
         // Remove [NEXT] tag from UI
         if (accumulatedText.toLowerCase().includes("[next]")) {
-            const cleanText = accumulatedText.replace(/\[next\]/gi, "").trim();
-            setMessages((prev) => prev.map((msg) => msg.id === aiMessageId ? { ...msg, content: cleanText } : msg));
-            // We don't return here yet, we need to save the cleaned text below
-            accumulatedText = cleanText; 
-            break; // Stop stream processing
+          const cleanText = accumulatedText.replace(/\[next\]/gi, "").trim();
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === aiMessageId ? { ...msg, content: cleanText } : msg,
+            ),
+          );
+          // We don't return here yet, we need to save the cleaned text below
+          accumulatedText = cleanText;
+          break; // Stop stream processing
         }
-        
-        setMessages((prev) => prev.map((msg) => msg.id === aiMessageId ? { ...msg, content: accumulatedText } : msg));
+
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === aiMessageId ? { ...msg, content: accumulatedText } : msg,
+          ),
+        );
       }
 
       // --- 4. SAVE TO DATABASE (THIS WAS MISSING) ---
       if (accumulatedText.trim()) {
-         console.log("💾 Saving Auto-Explanation to DB...");
-         
-         const { error } = await supabase.from("chat_logs").insert({
-           chapter_id: selectedChapter!.id,
-           user_id: currentUser.id,
-           role: "assistant",
-           content: accumulatedText,
-           // created_at will be auto-generated by DB
-         });
+        console.log("💾 Saving Auto-Explanation to DB...");
 
-         if (error) console.error("❌ Auto-Save Failed:", error.message);
-         else console.log("✅ Auto-Explanation Saved!");
+        const { error } = await supabase.from("chat_logs").insert({
+          chapter_id: selectedChapter!.id,
+          user_id: currentUser.id,
+          role: "assistant",
+          content: accumulatedText,
+          // created_at will be auto-generated by DB
+        });
+
+        if (error) console.error("❌ Auto-Save Failed:", error.message);
+        else console.log("✅ Auto-Explanation Saved!");
       }
-
-    } catch (e) { 
-      console.error(e); 
-    } finally { 
-      setIsAiThinking(false); 
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsAiThinking(false);
     }
   };
 
@@ -869,10 +950,10 @@ const isContentWorthExplaining = (text: string, type?: string) => {
   // A. RENDER DASHBOARD (Missing in previous response)
   const renderDashboard = () => (
     <div className="h-full w-full overflow-y-auto p-10 relative">
-      {bookStatus !== 'pending' && (
-        <button 
+      {bookStatus !== "pending" && (
+        <button
           onClick={() => {
-            setScheduleMode('edit');
+            setScheduleMode("edit");
             setIsScheduleModalOpen(true);
           }}
           className="absolute top-6 left-6 p-2 rounded-xl border border-blue-500/30 text-blue-400 hover:bg-blue-500/10 hover:text-blue-300 transition-all group z-50"
@@ -883,15 +964,16 @@ const isContentWorthExplaining = (text: string, type?: string) => {
         </button>
       )}
       <div className="max-w-5xl mx-auto pb-20">
-
-        {bookStatus === 'completed' && (
+        {bookStatus === "completed" && (
           <div className="absolute top-0 right-0 hidden md:flex items-center gap-4 animate-in fade-in slide-in-from-right-4 duration-700">
             <div className="bg-[#1e0a3c] border border-white/10 p-4 rounded-2xl shadow-xl flex items-center gap-4">
               <div className="text-right">
-                <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold">Total Progress</p>
+                <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold">
+                  Total Progress
+                </p>
                 <p className="text-2xl font-bold text-white">{bookProgress}%</p>
               </div>
-              
+
               {/* Circular Progress Indicator */}
               <div className="relative w-12 h-12">
                 <svg className="w-full h-full -rotate-90" viewBox="0 0 36 36">
@@ -996,15 +1078,18 @@ const isContentWorthExplaining = (text: string, type?: string) => {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-8">
             {chapters.map((chapter) => (
               <button
-    key={chapter.id}
-    onClick={() => {
-      setSelectedChapter(chapter);
-      // Update URL here too
-      window.history.pushState(null, '', `?chapterId=${chapter.id}`);
-    }}
-    className="text-left bg-[#1e0a3c] ..."
-  >
-
+                key={chapter.id}
+                onClick={() => {
+                  setSelectedChapter(chapter);
+                  // Update URL here too
+                  window.history.pushState(
+                    null,
+                    "",
+                    `?chapterId=${chapter.id}`,
+                  );
+                }}
+                className="text-left bg-[#1e0a3c] ..."
+              >
                 <div className="flex justify-between mb-4">
                   <span className="text-xs font-mono font-bold text-purple-300 bg-purple-500/20 px-2 py-1 rounded">
                     CH {chapter.order_index}
@@ -1213,6 +1298,36 @@ const isContentWorthExplaining = (text: string, type?: string) => {
     );
   };
 
+  const handlePlayAudio = async (text: string) => {
+    setIsPlaying(true);
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/speak`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: text,
+          language: selectedLanguage, // "hindi", "english", etc.
+        }),
+      });
+
+      if (!res.ok) throw new Error("Audio generation failed");
+
+      // Convert response to Blob and play
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+
+      if (audioRef.current) {
+        audioRef.current.src = url;
+        audioRef.current.play();
+      }
+      setAudioUrl(url);
+    } catch (e) {
+      console.error(e);
+      alert("Could not play audio");
+      setIsPlaying(false);
+    }
+  };
+
   // --- MAIN UI ---
   if (isLoadingData)
     return (
@@ -1236,21 +1351,22 @@ const isContentWorthExplaining = (text: string, type?: string) => {
         <div className="flex-1 overflow-y-auto p-2">
           {chapters.map((chapter) => (
             <button
-    key={chapter.id}
-    onClick={() => {
-      setSelectedChapter(chapter);
-      // Update URL without reloading page
-      window.history.pushState(null, '', `?chapterId=${chapter.id}`);
-    }}
-    className={`w-full text-left p-3 rounded-xl text-sm mb-2 transition-all duration-300 relative overflow-hidden group
-      ${selectedChapter?.id === chapter.id 
-        // ACTIVE STATE: Cyan Ring + Glow + Subtle Background
-        ? "text-white bg-white/5 ring-1 ring-cyan-400 shadow-[0_0_15px_rgba(34,211,238,0.15)]" 
-        // INACTIVE STATE
-        : "text-gray-400 hover:bg-white/5 hover:text-white border border-transparent"}
+              key={chapter.id}
+              onClick={() => {
+                setSelectedChapter(chapter);
+                // Update URL without reloading page
+                window.history.pushState(null, "", `?chapterId=${chapter.id}`);
+              }}
+              className={`w-full text-left p-3 rounded-xl text-sm mb-2 transition-all duration-300 relative overflow-hidden group
+      ${
+        selectedChapter?.id === chapter.id
+          ? // ACTIVE STATE: Cyan Ring + Glow + Subtle Background
+            "text-white bg-white/5 ring-1 ring-cyan-400 shadow-[0_0_15px_rgba(34,211,238,0.15)]"
+          : // INACTIVE STATE
+            "text-gray-400 hover:bg-white/5 hover:text-white border border-transparent"
+      }
     `}
-  >
-
+            >
               <span className="mr-2 font-mono text-xs opacity-50">
                 {chapter.order_index}.
               </span>{" "}
@@ -1282,7 +1398,7 @@ const isContentWorthExplaining = (text: string, type?: string) => {
       </div>
       <div
         onMouseDown={() => setIsResizing(true)}
-        className={`w-1 hover:w-2 bg-white/5 hover:bg-purple-500/50 cursor-col-resize transition-all z-50 flex items-center justify-center group ${isResizing ? 'bg-purple-500' : ''}`}
+        className={`w-1 hover:w-2 bg-white/5 hover:bg-purple-500/50 cursor-col-resize transition-all z-50 flex items-center justify-center group ${isResizing ? "bg-purple-500" : ""}`}
       >
         {/* Visual Dots for Grip */}
         <div className="h-8 w-[2px] bg-gray-600 group-hover:bg-white rounded-full" />
@@ -1290,7 +1406,7 @@ const isContentWorthExplaining = (text: string, type?: string) => {
 
       {/* RIGHT SIDEBAR (CHAT) */}
       {/* <div className="w-[400px] bg-[#0f0518] border-l border-white/5 flex flex-col"> */}
-      <div 
+      <div
         style={{ width: `${chatWidth}px` }} // Dynamic Width
         className="flex-shrink-0 bg-[#0f0518] border-l border-white/5 flex flex-col transition-[width] duration-0 ease-linear"
       >
@@ -1315,6 +1431,17 @@ const isContentWorthExplaining = (text: string, type?: string) => {
                   />
                 )}
                 <ReactMarkdown>{m.content}</ReactMarkdown>
+                {/* SPEAKER BUTTON */}
+                {m.role === "assistant" && (
+                  <button
+                    onClick={() => handlePlayAudio(m.content)}
+                    className="mt-2 text-gray-400 hover:text-purple-400 transition-colors"
+                    title="Read Aloud"
+                  >
+                    <Volume2 className="w-4 h-4" />{" "}
+                    {/* Import Volume2 from lucide-react */}
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -1332,9 +1459,13 @@ const isContentWorthExplaining = (text: string, type?: string) => {
                   Section Completed
                 </p>
                 <p className="text-xs text-gray-300 mb-3">
-                  Type <span className="text-white font-mono bg-white/10 px-1 rounded">Next</span> or click below to continue.
+                  Type{" "}
+                  <span className="text-white font-mono bg-white/10 px-1 rounded">
+                    Next
+                  </span>{" "}
+                  or click below to continue.
                 </p>
-                <button 
+                <button
                   onClick={handleNextParagraph}
                   className="ml-auto bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-2 transition-all"
                 >
@@ -1365,6 +1496,11 @@ const isContentWorthExplaining = (text: string, type?: string) => {
           </form>
         </div>
       </div>
+      <audio 
+  ref={audioRef} 
+  onEnded={() => setIsPlaying(false)} 
+  onError={() => setIsPlaying(false)}
+/>
     </div>
   );
 };
