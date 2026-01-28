@@ -36,13 +36,32 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   // Telegram Verification State
   const [isVerifying, setIsVerifying] = useState(false);
   const [telegramConnected, setTelegramConnected] = useState(false);
+  const [popupBlocked, setPopupBlocked] = useState(false);
 
   // Auto-detect Timezone
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+  // Handle Telegram deep link with popup blocker detection
+  const handleTelegramLink = () => {
+    const deepLink = `https://t.me/${botName}?start=${userId}`;
+    
+    // Try to open in new window
+    const newWindow = window.open(deepLink, "_blank");
+    
+    // Check if popup was blocked
+    if (!newWindow || newWindow.closed || typeof newWindow.closed === "undefined") {
+      setPopupBlocked(true);
+      // Fallback: copy link to clipboard
+      navigator.clipboard.writeText(deepLink).then(() => {
+        alert("🚫 Popup blocked!\n\n✅ Link copied to clipboard!\n\nPaste it in your browser or use the QR code below.");
+      });
+    }
+  };
+
   // Reset state when modal opens
   useEffect(() => {
     if (isOpen) {
+      setPopupBlocked(false);
       // Optional: You could check DB here to see if user is already connected
       // checkTelegramConnection();
     }
@@ -194,12 +213,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                   <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3">
                     <p className="font-bold mb-2 text-blue-100">👉 Easiest Way:</p>
                     <button
-                      onClick={() =>
-                        window.open(
-                          `https://t.me/${botName}?start=${userId}`,
-                          "_blank"
-                        )
-                      }
+                      onClick={handleTelegramLink}
                       className="w-full bg-blue-600 hover:bg-blue-500 text-white px-4 py-3 rounded-lg font-bold transition-all flex items-center justify-center gap-2 text-sm"
                     >
                       <span>🚀 Click Here → Telegram Opens Automatically</span>
@@ -207,10 +221,19 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                     <p className="text-[10px] text-blue-300 mt-2 text-center opacity-80">
                       ✨ Just tap "Send" when Telegram opens. That's it!
                     </p>
+                    
+                    {/* Show popup blocked warning */}
+                    {popupBlocked && (
+                      <div className="mt-2 bg-orange-500/20 border border-orange-500/40 rounded-lg p-2 text-orange-200 text-[11px] animate-in fade-in">
+                        <p className="font-bold">🚫 Popup was blocked!</p>
+                        <p className="mt-1">✅ Link copied to clipboard - paste in your browser</p>
+                        <p className="mt-1">📱 Or use the QR code below ↓</p>
+                      </div>
+                    )}
                   </div>
 
                   {/* Alternative: QR Code */}
-                  <details className="text-[10px] text-gray-400">
+                  <details className="text-[10px] text-gray-400" open={popupBlocked}>
                     <summary className="cursor-pointer hover:text-blue-300 mb-2">
                       📱 Or scan this QR code with your phone
                     </summary>
