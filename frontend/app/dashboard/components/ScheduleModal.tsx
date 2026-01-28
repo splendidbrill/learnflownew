@@ -185,8 +185,14 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
             <div className="mt-2 bg-blue-900/10 border border-blue-500/20 rounded-lg p-4 text-xs text-blue-200 animate-in fade-in slide-in-from-top-2">
               {!telegramConnected ? (
                 <div className="flex flex-col gap-3">
-                  <div className="flex justify-between items-center">
-                    <span className="opacity-80">1. Start the Bot</span>
+                  {/* Main instruction */}
+                  <div className="text-sm font-semibold text-blue-100">
+                    📱 Connect Your Telegram
+                  </div>
+
+                  {/* Simple 1-step instruction */}
+                  <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3">
+                    <p className="font-bold mb-2 text-blue-100">👉 Easiest Way:</p>
                     <button
                       onClick={() =>
                         window.open(
@@ -194,35 +200,60 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                           "_blank"
                         )
                       }
-                      className="text-blue-400 underline font-bold hover:text-blue-300"
+                      className="w-full bg-blue-600 hover:bg-blue-500 text-white px-4 py-3 rounded-lg font-bold transition-all flex items-center justify-center gap-2 text-sm"
                     >
-                      Open Telegram ↗
+                      <span>🚀 Click Here → Telegram Opens Automatically</span>
                     </button>
-                  </div>
-
-                  <div className="text-[10px] text-gray-400 bg-black/20 p-2 rounded border border-white/5">
-                    <p>Link not opening?</p>
-                    <p>
-                      Search <b>@{botName}</b> in Telegram and type:
+                    <p className="text-[10px] text-blue-300 mt-2 text-center opacity-80">
+                      ✨ Just tap "Send" when Telegram opens. That's it!
                     </p>
-                    <div className="flex items-center gap-2 mt-1">
-                      <code className="bg-black/40 px-2 py-1 rounded text-blue-300 font-mono select-all">
-                        /start {userId}
-                      </code>
-                      <button
-                        onClick={() =>
-                          navigator.clipboard.writeText(`/start ${userId}`)
-                        }
-                        className="text-xs text-gray-500 hover:text-white"
-                        title="Copy Command"
-                      >
-                        (Copy)
-                      </button>
-                    </div>
                   </div>
 
-                  <div className="flex justify-between items-center border-t border-blue-500/20 pt-3">
-                    <span className="opacity-80">2. Confirm connection</span>
+                  {/* Alternative: QR Code */}
+                  <details className="text-[10px] text-gray-400">
+                    <summary className="cursor-pointer hover:text-blue-300 mb-2">
+                      📱 Or scan this QR code with your phone
+                    </summary>
+                    <div className="bg-white p-2 rounded-lg inline-block">
+                      <img
+                        src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=https://t.me/${botName}?start=${userId}`}
+                        alt="QR Code"
+                        className="w-[120px] h-[120px]"
+                      />
+                    </div>
+                    <p className="text-[9px] mt-1 opacity-70">
+                      Use Google Lens or your camera to scan
+                    </p>
+                  </details>
+
+                  {/* Manual fallback */}
+                  <details className="text-[10px] text-gray-400">
+                    <summary className="cursor-pointer hover:text-blue-300">
+                      🔧 Advanced: Manual connection
+                    </summary>
+                    <div className="mt-2 bg-black/20 p-2 rounded border border-white/5">
+                      <p className="mb-1">Search <b className="text-blue-300">@{botName}</b> in Telegram</p>
+                      <p className="mb-1">Then send this command:</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <code className="bg-black/40 px-2 py-1 rounded text-blue-300 font-mono select-all flex-1">
+                          /start {userId}
+                        </code>
+                        <button
+                          onClick={() =>
+                            navigator.clipboard.writeText(`/start ${userId}`)
+                          }
+                          className="text-xs text-gray-500 hover:text-white px-2 py-1 bg-gray-700 rounded"
+                          title="Copy Command"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    </div>
+                  </details>
+
+                  {/* Verify button */}
+                  <div className="flex justify-between items-center border-t border-blue-500/20 pt-3 mt-1">
+                    <span className="opacity-80 text-xs">✅ Done? Verify connection:</span>
                     <button
                       onClick={checkTelegramConnection}
                       disabled={isVerifying}

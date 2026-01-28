@@ -97,6 +97,8 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   const [activeParagraphId, setActiveParagraphId] = useState<string | null>(
     null,
   );
+  
+  
 
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -486,7 +488,50 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
   // --- HANDLERS ---
 
+  const handleGenerateClick = () => {
+    setScheduleMode('create');
+    setIsScheduleModalOpen(true);
+  };
+
+  // 2. Triggered by "Skip" in Modal
+  const handleSkipSchedule = () => {
+    setIsScheduleModalOpen(false);
+    handleGenerateMap(); // <--- Calls your existing ingestion function
+  };
+
+  const handleScheduleSave = async (time: string, channels: string[], timezone: string) => {
+    setIsScheduleModalOpen(false);
+    
+    const [hour, minute] = time.split(':').map(Number);
+    
+    try {
+      await fetch(`${API_URL}/api/schedule/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+           userId: user?.id,
+           bookId: bookId,
+           chatId: "TEMP_CHAT_ID", // Backend looks up the real ID from profile
+           hour,
+           minute,
+           timezone: timezone,
+           channels: channels
+        })
+      });
+      console.log("Schedule created");
+    } catch (e) {
+      console.error("Failed to save schedule:", e);
+    }
+
+    // Only start ingestion if we are in 'create' mode (not editing later)
+    if (scheduleMode === 'create') {
+        handleGenerateMap(); 
+    }
+  };
+
   // 1. INGESTION HANDLER (This generates the Course Map)
+
+
   const handleGenerateMap = async () => {
     if (!book?.file_url) return alert("Error: Book URL missing");
     setIsGenerating(true);
@@ -1068,7 +1113,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
               Ready to Organize
             </h2>
             <button
-              onClick={handleGenerateMap}
+              onClick={handleGenerateClick}
               disabled={isGenerating}
               className="px-8 py-4 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold text-lg shadow-xl hover:-translate-y-1 transition-all disabled:opacity-50 inline-flex items-center"
             >
@@ -1629,6 +1674,17 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   onError={() => setIsPlaying(false)}
 />
 <audio ref={audioRef} className="hidden" />
+{user && (
+        <ScheduleModal 
+          isOpen={isScheduleModalOpen}
+          onClose={() => setIsScheduleModalOpen(false)}
+          onSave={handleScheduleSave}
+          onSkip={handleSkipSchedule}
+          mode={scheduleMode}
+          userId={user.id}
+          botName="learnainew_bot" // Your actual bot name
+        />
+      )}
     </div>
   );
 };

@@ -136,7 +136,13 @@ async def check_telegram_status(user_id: str):
 async def create_schedule(req: CreateScheduleRequest):
     if not qstash_client:
         raise HTTPException(status_code=500, detail="QStash not configured")
-
+    target_chat_id = req.chatId
+    if req.chatId == "TEMP_CHAT_ID" or not req.chatId:
+        profile = supabase.table("profiles").select("telegram_chat_id").eq("id", req.userId).single().execute()
+        if profile.data and profile.data.get("telegram_chat_id"):
+            target_chat_id = profile.data["telegram_chat_id"] # <--- WE HAVE THE REAL ID HERE
+        else:
+            print("❌ No Telegram ID found in profile.")
     # 1. Convert User's Local Time to UTC
     try:
         local_tz = pytz.timezone(req.timezone)
@@ -177,7 +183,7 @@ async def create_schedule(req: CreateScheduleRequest):
                 "type": "30min", 
                 "userId": req.userId, 
                 "bookId": req.bookId, 
-                "chatId": req.chatId,
+                "chatId": target_chat_id, 
                 "channels": req.channels
             }),
         )
@@ -190,7 +196,7 @@ async def create_schedule(req: CreateScheduleRequest):
                 "type": "5min", 
                 "userId": req.userId, 
                 "bookId": req.bookId, 
-                "chatId": req.chatId,
+                "chatId": target_chat_id, 
                 "channels": req.channels
             }),
         )
@@ -199,13 +205,13 @@ async def create_schedule(req: CreateScheduleRequest):
         supabase.table("study_schedules").insert({
             "user_id": req.userId,
             "book_id": req.bookId,
-            "telegram_chat_id": req.chatId,
+            "telegram_chat_id": target_chat_id,
             "cron_schedule": f"{req.hour}:{req.minute} {req.timezone}",
-            "qstash_schedule_id_30": res_30.schedule_id,
-            "qstash_schedule_id_5": res_5.schedule_id
+            "qstash_schedule_id_30": res_30,
+            "qstash_schedule_id_5": res_5
         }).execute()
 
-        return {"status": "scheduled", "ids": [res_30.schedule_id, res_5.schedule_id]}
+        return {"status": "scheduled", "ids": [res_30, res_5]}
     
     except Exception as e:
         print(f"Error scheduling: {e}")
@@ -236,8 +242,17 @@ async def handle_notification(payload: CronPayload):
     # B. Send to TELEGRAM (if selected)
     if "telegram" in payload.channels:
         if payload.type == "30min":
-            teaser = "📚 **Study Session Ahead!**\n\nWe prepared a summary of your last session. Get ready!"
-            await send_telegram_message(payload.chatId, teaser, buttons=None)
+            teaser = (
+                "📚 **Study Session Ahead!**\n\n"
+                "We prepared a summary of your last session. Get ready!\n\n"
+                "✨ *Consistency is key. Even 5 minutes a day makes you 44% better in a year.*"
+            )
+            # Add "I will study!" button
+            await send_telegram_message(
+                payload.chatId, 
+                teaser, 
+                buttons=[("I will study!", "COMMIT")]
+            )
 
         elif payload.type == "5min":
             # Attach Session ID to buttons
@@ -293,11 +308,21 @@ async def telegram_webhook(update: dict):
                         print(f"❌ DATABASE ERROR: {db_e}")
                         await send_telegram_message(chat_id, "❌ Database Error. Check server logs.")
                 else:
-                    print("👋 Regular start command received")
-                    await send_telegram_message(chat_id, "Welcome! Please use the 'Connect' button in the app.")
+                    print("👋 Regular start command received (no user ID)")
+                    try:
+                        await send_telegram_message(
+                            chat_id, 
+                            "👋 Welcome to LearnFlow!\n\n"
+                            "To connect your account, use the 'Connect Telegram' button in the app.\n\n"
+                            "Or send: `/start YOUR_USER_ID`"
+                        )
+                    except Exception as msg_e:
+                        print(f"❌ Failed to send message: {msg_e}")
 
     except Exception as e:
         print(f"🔥 CRITICAL CRASH: {e}")
+        import traceback
+        traceback.print_exc()
         
     return {"status": "ok"}
 
@@ -307,12 +332,13 @@ async def send_telegram_message(chat_id: str, text: str, buttons: list = None):
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
     
     if buttons:
-        # ... button logic ...
-        pass
+        # Create inline keyboard with buttons
+        keyboard = [[{"text": btn[0], "callback_data": btn[1]} for btn in buttons]]
+        payload["reply_markup"] = {"inline_keyboard": keyboard}
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(url, json=payload)
         if resp.status_code != 200:
-            print(f"❌ TELEGRAM API ERROR: {resp.status_code} - {resp.text}") # <--- THIS IS THE KEY
+            print(f"❌ TELEGRAM API ERROR: {resp.status_code} - {resp.text}")
         else:
             print(f"✅ Message sent to {chat_id}")

@@ -445,6 +445,18 @@ useEffect(() => {
         deleteSubject(deleteConfirm.id);
       } 
       else if (deleteConfirm.type === 'book' && deleteConfirm.id && deleteConfirm.subjectId) {
+        // First, delete all related study_sessions to avoid foreign key constraint violation
+        const { error: sessionsError } = await supabase
+          .from('study_sessions')
+          .delete()
+          .eq('book_id', deleteConfirm.id);
+        
+        if (sessionsError) {
+          console.error("Failed to delete study sessions:", sessionsError);
+          throw sessionsError;
+        }
+
+        // Then delete the book itself
         const { error } = await supabase
           .from('course_books')
           .delete()
