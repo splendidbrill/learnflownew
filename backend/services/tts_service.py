@@ -14,6 +14,13 @@ VOICES = {
 
 async def generate_audio(text: str, language: str, llm):
     target_lang = language.lower()
+    
+    voice_map = {
+        "english": "en-US-AndrewNeural",
+        "hindi": "hi-IN-MadhurNeural",
+        "spanish": "es-ES-AlvaroNeural",
+        "chinese": "zh-CN-YunxiNeural"
+    }
     voice = VOICES.get(target_lang, "en-US-AndrewNeural")
     
     text_to_speak = text
@@ -33,7 +40,8 @@ async def generate_audio(text: str, language: str, llm):
             print(f"⚠️ Translation failed: {e}")
             # Fallback: Speak English if translation fails
             voice = "en-US-AndrewNeural" 
-
+    else:
+        print("⚡ Skipping translation for English (Speed Boost)")
     # 2. TTS GENERATION
     # Use tempfile to work on Windows/Linux/Mac
     temp_dir = tempfile.gettempdir()

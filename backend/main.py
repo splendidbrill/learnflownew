@@ -2,6 +2,7 @@ import os
 import fitz # PyMuPDF
 import re
 import json
+import hashlib
 import httpx
 from pathlib import Path
 from fastapi import FastAPI, BackgroundTasks, HTTPException
@@ -456,6 +457,29 @@ class TTSRequest(BaseModel):
 
 @app.post("/api/speak")
 async def speak_endpoint(req: TTSRequest):
+    
+    unique_str = f"{req.text}_{req.language}"
+    file_hash = hashlib.md5(unique_str.encode()).hexdigest()
+    filename = f"{file_hash}.mp3"
+    
+    # Define a static cache folder
+    cache_dir = "static/audio_cache"
+    os.makedirs(cache_dir, exist_ok=True)
+    file_path = os.path.join(cache_dir, filename)
+    
+    if os.path.exists(file_path):
+        print("🚀 Serving from Cache (Instant!)")
+        return FileResponse(file_path, media_type="audio/mpeg")
+
+    # If not in cache, generate it
+    generated_path, _ = await generate_audio(req.text, req.language, llm)
+    if generated_path:
+        import shutil
+        shutil.move(generated_path, file_path)
+        return FileResponse(file_path, media_type="audio/mpeg")
+        
+    return {"error": "Failed"}
+
     print(f"🔊 Generating Audio in {req.language}")
     
     # We pass the global 'llm' object we created in main.py
