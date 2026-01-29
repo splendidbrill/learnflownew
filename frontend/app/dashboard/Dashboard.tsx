@@ -298,8 +298,20 @@ useEffect(() => {
   };
   
   if (user) {
-      fetchData();
-      fetchStats(); // <--- Call the new function
+      const initDashboard = async () => {
+        // 1. CHECK-IN STREAK (Update DB)
+        try {
+          await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/stats/checkin/${user.id}`, { method: 'POST' });
+        } catch (err) {
+          console.error("Check-in failed", err);
+        }
+
+        // 2. FETCH LATEST STATS (Read DB)
+        await fetchStats();
+        await fetchData();
+      };
+      
+      initDashboard();
   }
   }, [user, supabase, setSubjects]);
 
@@ -509,7 +521,7 @@ useEffect(() => {
             {/* 1. XP CARD */}
             <StatCard 
               title="Total XP" 
-              value={userMetrics.xp || 0} 
+              value={stats.xp || userMetrics.xp || 0} 
               icon={Zap} 
               subtext={`Lvl ${stats.level || 1} - ${stats.rank || 'Novice'}`} 
             />
@@ -517,7 +529,7 @@ useEffect(() => {
             {/* 2. STREAK CARD */}
             <StatCard 
               title="Day Streak" 
-              value={userMetrics.streak || 0} 
+              value={stats.streak || 0} 
               icon={Flame} 
             />
             

@@ -12,6 +12,72 @@ class StatsResponse(BaseModel):
     rank: str
     total_hours: float
 
+@router.post("/stats/checkin/{user_id}")
+async def check_in_streak(user_id: str):
+    """
+    Updates the user's streak based on their last visit.
+    Logic:
+    - If last_visit is today: Do nothing.
+    - If last_visit is yesterday: Increment streak.
+    - If last_visit is older: Reset streak to 1.
+    - Always update last_visit to now.
+    """
+    now = datetime.now()
+    today_str = now.date().isoformat()
+    
+    # 1. Get current profile data
+    res = supabase.table("profiles").select("streak, last_visit").eq("id", user_id).single().execute()
+    
+    if not res.data:
+        # Create profile if missing (shouldn't happen for logged in user usually, but safe fallback)
+        # Assuming triggers handle profile creation, but if not:
+        return {"status": "profile_not_found"}
+
+    profile = res.data
+    current_streak = profile.get("streak", 0) or 0
+    last_visit_str = profile.get("last_visit")
+    
+    # Defaults
+    new_streak = 1
+    
+    if last_visit_str:
+        # Parse last_visit (handle potential Z or offset)
+        try:
+            # Simple date comparison
+            last_visit_date = datetime.fromisoformat(last_visit_str.replace('Z', '+00:00')).date()
+            current_date = now.date()
+            
+            diff = (current_date - last_visit_date).days
+            
+            if diff == 0:
+                # Already visited today
+                # FIX: If streak is 0 for some reason (e.g. first run logic fail), bump to 1
+                if current_streak == 0:
+                    new_streak = 1
+                    # Fall through to update DB
+                else:
+                    return {"status": "already_checked_in", "streak": current_streak}
+            elif diff == 1:
+                # Visited yesterday, increment
+                new_streak = current_streak + 1
+            else:
+                # Broken streak
+                new_streak = 1
+        except Exception as e:
+            print(f"Error parsing date: {e}")
+            new_streak = 1
+    else:
+        # First visit ever
+        new_streak = 1
+        
+    # 2. Update DB
+    supabase.table("profiles").update({
+        "streak": new_streak,
+        "last_visit": now.isoformat()
+    }).eq("id", user_id).execute()
+    
+    return {"status": "updated", "streak": new_streak}
+
 @router.get("/stats/{user_id}", response_model=StatsResponse)
 async def get_user_stats(user_id: str):
     # --- 1. XP CALCULATION ---
@@ -19,15 +85,9 @@ async def get_user_stats(user_id: str):
     para_res = supabase.table("paragraphs")\
         .select("id", count="exact")\
         .eq("is_completed", True)\
-        .execute() # Note: In real app, join with user_progress if tracking multi-user on same book rows
+        .execute() 
         
-    # We need to count paragraphs completed BY THIS USER.
-    # Since your 'paragraphs' table handles completion per row (MVP style), 
-    # we assume for now the book is unique to the user or you use a 'user_progress' table.
-    # If using 'user_progress':
-    prog_res = supabase.table("paragraphs").select("*", count="exact").eq("is_completed", True).execute()
-    # For MVP (assuming you are updating paragraphs directly):
-    para_count = prog_res.count or 0
+    para_count = para_res.count or 0
     
     # Sessions: 50 XP each
     sess_res = supabase.table("study_sessions").select("id", count="exact").eq("user_id", user_id).eq("status", "confirmed").execute()
@@ -35,35 +95,14 @@ async def get_user_stats(user_id: str):
 
     total_xp = (para_count * 10) + (sess_count * 50)
 
-    # --- 2. STREAK CALCULATION ---
-    # Get all confirmed dates
-    dates_res = supabase.table("study_sessions")\
-        .select("scheduled_at")\
-        .eq("user_id", user_id)\
-        .eq("status", "confirmed")\
-        .order("scheduled_at", desc=True)\
-        .execute()
-
-    confirmed_dates = set()
-    for item in dates_res.data:
-        dt = datetime.fromisoformat(item['scheduled_at'].replace('Z', '+00:00'))
-        confirmed_dates.add(dt.date())
-
-    # Count backwards from today
+    # --- 2. STREAK (Now from Profiles) ---
     streak = 0
-    check_date = datetime.now().date()
-    
-    # Allow missing 'today' if they studied yesterday
-    if check_date not in confirmed_dates:
-        if (check_date - timedelta(days=1)) in confirmed_dates:
-            check_date -= timedelta(days=1)
-        else:
-            check_date = None # Streak broken/not started
-
-    if check_date:
-        while check_date in confirmed_dates:
-            streak += 1
-            check_date -= timedelta(days=1)
+    try:
+        prof_res = supabase.table("profiles").select("streak").eq("id", user_id).single().execute()
+        if prof_res.data:
+            streak = prof_res.data.get("streak", 0) or 0
+    except Exception as e:
+        print(f"Error fetching streak: {e}")
 
     # --- 3. RANKS ---
     level = int((total_xp ** 0.5) // 5) + 1

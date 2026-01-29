@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()  # <--- CALL THIS IMMEDIATELY
 
 from db import supabase 
+from services.email_service import send_30min_reminder_email, send_5min_reminder_email
 # Initialize Router
 router = APIRouter()
 
@@ -267,9 +268,20 @@ async def handle_notification(payload: CronPayload):
 
     # C. Send to EMAIL (if selected)
     if "email" in payload.channels:
-        # Placeholder for Email Logic (e.g. Resend, SES)
-        print(f"📧 [MOCK EMAIL] To User {payload.userId}: Study session starts in {payload.type}")
-        # await send_email_logic(...)
+        # Fetch user email from Supabase
+        try:
+            profile = supabase.table("profiles").select("email").eq("id", payload.userId).single().execute()
+            user_email = profile.data.get("email") if profile.data else None
+            
+            if user_email:
+                if payload.type == "30min":
+                    await send_30min_reminder_email(user_email, payload.userId, session_id)
+                elif payload.type == "5min":
+                    await send_5min_reminder_email(user_email, payload.userId)
+            else:
+                print(f"⚠️ No email found for user {payload.userId}")
+        except Exception as e:
+            print(f"❌ Email send failed: {e}")
 
     return {"status": "sent"}
 
@@ -342,3 +354,76 @@ async def send_telegram_message(chat_id: str, text: str, buttons: list = None):
             print(f"❌ TELEGRAM API ERROR: {resp.status_code} - {resp.text}")
         else:
             print(f"✅ Message sent to {chat_id}")
+
+# --- EMAIL ENDPOINTS ---
+
+@router.get("/user/email/{user_id}")
+async def get_user_email(user_id: str):
+    """Fetch user email from Supabase Auth"""
+    try:
+        # Fetch from Supabase profiles table (assumes email is synced from auth)
+        res = supabase.table("profiles").select("email").eq("id", user_id).single().execute()
+        
+        if res.data and res.data.get("email"):
+            return {"email": res.data["email"]}
+        else:
+            return {"email": None}
+    except Exception as e:
+        print(f"❌ Error fetching email: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch email")
+
+@router.get("/email/confirm")
+async def email_confirm(session_id: str = None, user_id: str = None):
+    """Handle 'I will study' button click from email"""
+    print(f"✅ Email confirmation received: User {user_id}, Session {session_id}")
+    
+    # Optional: Update session status in database
+    if session_id:
+        try:
+            supabase.table("study_sessions").update({
+                "status": "confirmed"
+            }).eq("id", session_id).execute()
+        except Exception as e:
+            print(f"⚠️ Failed to update session: {e}")
+    
+    # Return a simple HTML page
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Confirmed!</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                margin: 0;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+            }
+            .container {
+                text-align: center;
+                padding: 40px;
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 20px;
+                backdrop-filter: blur(10px);
+            }
+            .emoji { font-size: 64px; margin-bottom: 20px; }
+            h1 { font-size: 48px; margin: 0; }
+            p { font-size: 18px; opacity: 0.9; margin-top: 10px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="emoji">🎯</div>
+            <h1>Great!</h1>
+            <p>Your commitment is logged. See you in the session! 💪</p>
+        </div>
+    </body>
+    </html>
+    """
+    
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(content=html_content)

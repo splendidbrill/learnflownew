@@ -21,3 +21,5 @@ huggingface_hub
 openai 
 edge-tts
 aiofiles
+python-telegram-bot
+resend

@@ -38,6 +38,11 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   const [telegramConnected, setTelegramConnected] = useState(false);
   const [popupBlocked, setPopupBlocked] = useState(false);
 
+  // Email Verification State
+  const [userEmail, setUserEmail] = useState("");
+  const [emailVerified, setEmailVerified] = useState(false);
+  const [isLoadingEmail, setIsLoadingEmail] = useState(false);
+
   // Auto-detect Timezone
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -58,14 +63,32 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
     }
   };
 
-  // Reset state when modal opens
+  // Fetch user email from Supabase when modal opens
   useEffect(() => {
     if (isOpen) {
       setPopupBlocked(false);
-      // Optional: You could check DB here to see if user is already connected
-      // checkTelegramConnection();
+      fetchUserEmail();
     }
   }, [isOpen]);
+
+  // Fetch user email from Supabase Auth
+  const fetchUserEmail = async () => {
+    setIsLoadingEmail(true);
+    try {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/user/email/${userId}`
+      );
+      const data = await res.json();
+      if (data.email) {
+        setUserEmail(data.email);
+        setEmailVerified(true);
+      }
+    } catch (e) {
+      console.error("Failed to fetch email:", e);
+    } finally {
+      setIsLoadingEmail(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -109,6 +132,13 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
       mode === "create"
     ) {
       alert("Please verify your Telegram connection first.");
+      return;
+    }
+    if (
+      selectedChannels.includes("email") &&
+      !emailVerified
+    ) {
+      alert("Please ensure your email is verified.");
       return;
     }
 
@@ -165,7 +195,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
             {/* Telegram Button */}
             <button
               onClick={() =>
-                setChannels((prev) => ({ ...prev, telegram: !prev.telegram }))
+                setChannels({ telegram: true, email: false })
               }
               className={`relative p-3 rounded-xl border flex flex-col items-center gap-2 transition-all ${
                 channels.telegram
@@ -183,7 +213,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
             {/* Email Button */}
             <button
               onClick={() =>
-                setChannels((prev) => ({ ...prev, email: !prev.email }))
+                setChannels({ telegram: false, email: true })
               }
               className={`relative p-3 rounded-xl border flex flex-col items-center gap-2 transition-all ${
                 channels.email
@@ -198,6 +228,25 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
               )}
             </button>
           </div>
+
+          {/* Email Verification (Visible only if Email selected) */}
+          {channels.email && (
+            <div className="mt-2 bg-purple-900/10 border border-purple-500/20 rounded-lg p-4 text-xs text-purple-200 animate-in fade-in slide-in-from-top-2">
+              {isLoadingEmail ? (
+                <div className="text-center py-2 text-purple-300">Loading email...</div>
+              ) : emailVerified && userEmail ? (
+                <div className="flex items-center gap-2 text-green-400 font-bold justify-center py-1">
+                  <CheckCircle className="w-5 h-5" />
+                  <span>Email: {userEmail}</span>
+                </div>
+              ) : (
+                <div className="text-center text-purple-300 py-2">
+                  <p>⚠️ No email found in your account.</p>
+                  <p className="text-[10px] mt-1 opacity-70">Please update your profile settings.</p>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Telegram Handshake (Visible only if Telegram selected) */}
           {channels.telegram && (
@@ -309,7 +358,8 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
           <button
             onClick={handleSave}
             disabled={
-              channels.telegram && !telegramConnected && mode === "create"
+              (channels.telegram && !telegramConnected && mode === "create") ||
+              (channels.email && !emailVerified)
             }
             className="flex-[2] py-3 rounded-xl bg-gradient-to-r from-purple-600 to-blue-600 text-white font-bold shadow-lg hover:shadow-purple-500/20 transition-all hover:scale-[1.02] disabled:opacity-50 disabled:grayscale disabled:cursor-not-allowed"
           >
