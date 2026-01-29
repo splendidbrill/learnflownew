@@ -2,7 +2,16 @@ import { create } from 'zustand';
 import { StoreState, Subject, Book } from './types';
 
 export const useStore = create<StoreState>((set) => ({
-  stats: { subjects: 0, totalBooks: 0, completed: 0, progress: 0 },
+  stats: { 
+    subjects: 0, 
+    totalBooks: 0, 
+    completed: 0, 
+    progress: 0,
+    xp: 0,
+    streak: 0,
+    level: 1,
+    rank: 'Novice'
+  },
   subjects: [], 
   activeBook: null,
   

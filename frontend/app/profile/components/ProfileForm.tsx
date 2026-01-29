@@ -14,6 +14,7 @@ import {
   Sparkles,
   ArrowRight
 } from "lucide-react";
+import CreditsSubscriptionCard from "./CreditsSubscriptionCard";
 
 export default function ProfileForm({ user }: { user: User }) {
   const supabase = createClient();
@@ -244,6 +245,11 @@ export default function ProfileForm({ user }: { user: User }) {
                 </button>
               </div>
             </form>
+          </div>
+
+          {/* Credits & Subscription Card */}
+          <div className="mt-8 animate-in fade-in zoom-in duration-500 delay-200">
+            <CreditsSubscriptionCard userId={user.id} />
           </div>
         </div>
       </div>

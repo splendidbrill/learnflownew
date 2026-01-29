@@ -22,12 +22,7 @@ export interface Subject {
   progress?: number;
 }
 
-export interface Stats {
-  subjects: number;
-  totalBooks: number;
-  completed: number;
-  progress: number;
-}
+// Old Stats interface removed (merged with the one below)
 
 export interface StoreState {
   stats: Stats;

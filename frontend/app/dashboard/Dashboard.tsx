@@ -12,8 +12,11 @@ import {
   TrendingUp,
   Zap,
   Flame,
-  AlertTriangle
+  AlertTriangle,
+  Crown,
+  ArrowUpRight
 } from 'lucide-react';
+import Link from 'next/link';
 
 import { useStore } from './store';
 import { StatCard } from './components/StatCard';
@@ -53,6 +56,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
   const [isSubjectModalOpen, setIsSubjectModalOpen] = useState(false);
   const [editingSubject, setEditingSubject] = useState<Subject | null>(null);
   const [statsData, setStatsData] = useState({ xp: 0, streak: 0, rank: 'Novice', level: 1 });
+  const [subscriptionTier, setSubscriptionTier] = useState('explorer');
   
   // Modal State for Books
   const [bookModalState, setBookModalState] = useState<{ 
@@ -90,12 +94,17 @@ useEffect(() => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    // 1. Fetch GLOBAL XP from Profiles
+    // 1. Fetch GLOBAL XP and Subscription Tier from Profiles
     const { data: profile } = await supabase
       .from('profiles')
-      .select('xp')
+      .select('xp, subscription_tier')
       .eq('id', user.id)
       .single();
+
+    // Set subscription tier
+    if (profile?.subscription_tier) {
+      setSubscriptionTier(profile.subscription_tier);
+    }
 
     // 2. Fetch Counts
     const { count: books } = await supabase.from('course_books').select('*', { count: 'exact', head: true });
@@ -512,6 +521,28 @@ useEffect(() => {
                 Welcome back, {user.user_metadata?.full_name || 'Scholar'}!
               </h1>
               <p className="text-purple-300/80 text-sm md:text-base">Pick up where you left off</p>
+            </div>
+            
+            {/* Subscription Badge & Upgrade */}
+            <div className="flex items-center gap-3">
+              <div className={`flex items-center gap-2 px-4 py-2 rounded-xl border ${
+                subscriptionTier === 'elite' ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' :
+                subscriptionTier === 'master' ? 'bg-purple-500/10 border-purple-500/30 text-purple-400' :
+                subscriptionTier === 'scholar' ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' :
+                'bg-white/5 border-white/10 text-gray-400'
+              }`}>
+                <Crown className="w-4 h-4" />
+                <span className="font-semibold capitalize">{subscriptionTier}</span>
+              </div>
+              
+              {subscriptionTier !== 'elite' && (
+                <Link 
+                  href="/pricing"
+                  className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white px-4 py-2 rounded-xl font-medium text-sm transition-all hover:scale-105 shadow-lg shadow-purple-900/30"
+                >
+                  Upgrade <ArrowUpRight className="w-4 h-4" />
+                </Link>
+              )}
             </div>
           </header>
 
