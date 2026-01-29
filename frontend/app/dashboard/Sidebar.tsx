@@ -188,11 +188,15 @@ import {
   ChevronRight, 
   ChevronLeft,
   LayoutDashboard,
+  Shield,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client"; 
 import { useRouter, usePathname } from "next/navigation"; 
 import Link from "next/link";
 import { User } from '@supabase/supabase-js';
+
+// Founder email from environment variable (server-validated, this is just for UI)
+const FOUNDER_EMAIL = process.env.NEXT_PUBLIC_FOUNDER_EMAIL || "";
 
 interface SidebarProps {
   user: User;
@@ -282,6 +286,21 @@ export const Sidebar: React.FC<SidebarProps> = ({ user }) => {
           <UserIcon className="w-5 h-5 shrink-0" />
           {!isCollapsed && <span className="font-medium truncate animate-in fade-in">My Profile</span>}
         </Link>
+
+        {/* Admin Panel - Only for Founder */}
+        {user.email === FOUNDER_EMAIL && (
+          <Link 
+            href="/dashboard/admin"
+            className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all group ${
+              pathname === '/dashboard/admin' 
+                ? 'bg-gradient-to-r from-amber-500/20 to-orange-500/20 text-amber-300 border border-amber-500/30' 
+                : 'text-amber-400 hover:bg-amber-500/10 hover:text-amber-300 border border-transparent'
+            }`}
+          >
+            <Shield className="w-5 h-5 shrink-0" />
+            {!isCollapsed && <span className="font-medium truncate animate-in fade-in">Admin Panel</span>}
+          </Link>
+        )}
 
       </div>
 

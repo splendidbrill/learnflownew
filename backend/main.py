@@ -19,7 +19,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from db import supabase 
 from services.vision_service import analyze_diagram
-from routers import scheduler, stats
+from routers import scheduler, stats, admin
 
 # 1. Load Env
 env_path = Path(__file__).parent / '.env'
@@ -38,6 +38,7 @@ app.add_middleware(
 
 app.include_router(scheduler.router, prefix="/api")
 app.include_router(stats.router, prefix="/api")
+app.include_router(admin.router, prefix="/api")
 
 # --- 3. SETUP TEXT BRAIN (DeepSeek via Azure) ---
 text_base_url = os.getenv("AZURE_TEXT_BASE_URL")
