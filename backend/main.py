@@ -320,8 +320,19 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
                         "start_page": max(1, t[2] + pdf_offset)
                     })
         else:
-            # AI Fallback (unchanged)
-            pass
+            # NO TOC FALLBACK: Create a single chapter covering entire book
+            print("📖 No TOC found. Creating single chapter for entire book.")
+            
+            # Get book title from DB for the chapter name
+            book_res = supabase.table("course_books").select("title").eq("id", book_id).single().execute()
+            book_title = "Full Book"
+            if book_res.data and book_res.data.get("title"):
+                book_title = book_res.data["title"]
+            
+            chapters_to_save.append({
+                "title": book_title,
+                "start_page": 1
+            })
 
         # Save to DB
         supabase.table("chapters").delete().eq("book_id", book_id).execute()
