@@ -18,53 +18,63 @@ interface Plan {
 
 const plans: Plan[] = [
   {
-    name: "Free",
-    price: "$0",
-    period: "forever",
-    description: "Perfect for trying out LearnFlow",
+    name: "Scholar",
+    price: "$20",
+    period: "per month",
+    description: "Individual Students",
     features: [
-      "1 Subject",
-      "2 Books per subject",
-      "Basic AI explanations",
-      "10 lessons per month",
-      "Community support"
+      "Personalized Analogy Engine",
+      "Unlimited PDF Pages",
+      "5 Subject Profiles",
+      "Unlimited Lessons (edge-tts)",
+      "Personal Dashboard",
+      "Standard Scheduling",
+      "Basic History Tracking",
+      "Individual Collaboration",
+      "Unlimited Diagram Analysis (Gemini 3)",
+      "Email Support"
     ],
-    cta: "Start Free",
+    cta: "Start Scholar",
     popular: false
   },
   {
-    name: "Pro",
-    price: "$19",
+    name: "Master",
+    price: "$49",
     period: "per month",
-    description: "For serious learners",
+    description: "Power Learners",
     features: [
-      "Unlimited subjects",
-      "Unlimited books",
-      "Advanced AI analogies",
-      "Unlimited lessons",
-      "Schedule custom times",
-      "Progress tracking",
-      "Priority support",
-      "Export notes"
+      "Advanced AI Analogies",
+      "Unlimited PDF Books",
+      "Unlimited Subjects",
+      "Unlimited Lessons",
+      "Personal Dashboard",
+      "Schedule Custom Times",
+      "Progress Tracking",
+      "Individual Collaboration",
+      "Unlimited + AI Redraw",
+      "Priority Support"
     ],
-    cta: "Start Pro Trial",
+    cta: "Start Master",
     popular: true
   },
   {
-    name: "Team",
-    price: "$49",
+    name: "Elite",
+    price: "$99",
     period: "per month",
-    description: "Perfect for study groups",
+    description: "Teams & Groups",
     features: [
-      "Everything in Pro",
-      "Up to 5 team members",
-      "Shared subjects & books",
-      "Group study sessions",
-      "Admin dashboard",
-      "Dedicated support",
-      "Custom integrations"
+      "Everything in Master",
+      "Shared Books & Subjects (Coming Soon)",
+      "Unlimited Subjects",
+      "Premium Neural Voice",
+      "Personal Dashboard",
+      "Group Study (Coming Soon)",
+      "Team Analytics",
+      "Up to 5 Team Members (Coming Soon)",
+      "High-res Reconstructions",
+      "Dedicated Support"
     ],
-    cta: "Contact Sales",
+    cta: "Start Elite",
     popular: false
   }
 ];
@@ -91,6 +101,65 @@ export default function Pricing(): JSX.Element {
           <p className="text-xl text-slate-400 max-w-2xl mx-auto">
             Start free, upgrade when you're ready
           </p>
+        </motion.div>
+
+        <motion.div
+          initial={{ y: 20, opacity: 0 }}
+          whileInView={{ y: 0, opacity: 1 }}
+          viewport={{ once: true }}
+          transition={{ duration: 0.6, delay: 0.2 }}
+          className="relative mb-12"
+        >
+          <div className="relative bg-white/5 backdrop-blur-sm rounded-3xl p-8 border border-white/10 hover:border-white/20 transition-all duration-300">
+            <div className="grid md:grid-cols-4 gap-8 items-center">
+              <div className="md:col-span-1">
+                <h3 className="text-2xl font-bold text-white mb-2">Free</h3>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-4xl font-bold text-white">$0</span>
+                  <span className="text-slate-400">/ Month</span>
+                </div>
+                <p className="text-slate-400 text-sm mt-2">
+                  Perfect for trying out LearnFlow
+                </p>
+                <Button className="w-full mt-6 py-8 text-xl font-bold rounded-xl bg-gradient-to-r from-purple-500 to-cyan-500 hover:from-purple-600 hover:to-cyan-600 text-white shadow-lg shadow-purple-500/30">
+                  Get Started
+                </Button>
+              </div>
+
+              <div className="md:col-span-3 grid sm:grid-cols-2 gap-6">
+                <div>
+                  <h4 className="text-white font-semibold mb-2 flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-purple-400" /> Analogy Engine
+                  </h4>
+                  <p className="text-slate-400 text-sm">Basic Text-only analogies</p>
+                </div>
+                <div>
+                  <h4 className="text-white font-semibold mb-2 flex items-center gap-2">
+                    <Check className="w-4 h-4 text-purple-400" /> Dashboard
+                  </h4>
+                  <p className="text-slate-400 text-sm">Personal Dashboard for all users</p>
+                </div>
+                <div>
+                  <h4 className="text-white font-semibold mb-2 flex items-center gap-2">
+                    <Check className="w-4 h-4 text-purple-400" /> Limits
+                  </h4>
+                  <p className="text-slate-400 text-sm">10 PDF pages per file | 1 Subject profile</p>
+                </div>
+                <div>
+                  <h4 className="text-white font-semibold mb-2 flex items-center gap-2">
+                    <Check className="w-4 h-4 text-purple-400" /> Daily Access
+                  </h4>
+                  <p className="text-slate-400 text-sm">5 Voice lessons | 3 Diagram analyses</p>
+                </div>
+                <div className="sm:col-span-2">
+                  <h4 className="text-white font-semibold mb-2 flex items-center gap-2">
+                    <Check className="w-4 h-4 text-purple-400" /> Support
+                  </h4>
+                  <p className="text-slate-400 text-sm">Access to student community support</p>
+                </div>
+              </div>
+            </div>
+          </div>
         </motion.div>
 
         <div className="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto">
@@ -169,9 +238,9 @@ export default function Pricing(): JSX.Element {
           transition={{ duration: 0.6, delay: 0.4 }}
           className="text-center mt-12"
         >
-          <p className="text-slate-400">
+          {/* <p className="text-slate-400">
             All plans include a 14-day money-back guarantee. No questions asked.
-          </p>
+          </p> */}
         </motion.div>
       </div>
     </div>
