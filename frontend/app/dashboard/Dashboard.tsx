@@ -25,6 +25,8 @@ import { QuickActionCard } from './components/QuickActionCard';
 import { AddSubjectModal } from './components/AddSubjectModal';
 import { AddBookModal } from './components/AddBookModal';
 import { ConfirmationModal } from './components/ConfirmationModal';
+import { UpgradePlanModal } from './components/UpgradePlanModal';
+import { useRateLimit } from './hooks/useRateLimit';
 
 // Import Types
 import { Subject, Book } from './types'; 
@@ -88,6 +90,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ user }) => {
   totalBooks: 0, 
   totalSubjects: 0 
 });
+
+  // Rate Limiting State
+  const { checkLimit } = useRateLimit(user.id);
+  const [upgradeModal, setUpgradeModal] = useState<{
+    isOpen: boolean;
+    featureName: string;
+    limit: number;
+  }>({ isOpen: false, featureName: '', limit: 0 });
 
 useEffect(() => {
   const fetchGlobalStats = async () => {
@@ -426,8 +436,36 @@ useEffect(() => {
     }
   };
 
-  const handleAddBookClick = (subjectId: string) => {
+  const handleAddBookClick = async (subjectId: string) => {
+    // Check rate limit before opening modal
+    const result = await checkLimit('books_per_month');
+    if (result && !result.canUse) {
+      setUpgradeModal({
+        isOpen: true,
+        featureName: result.featureName,
+        limit: result.limit
+      });
+      return;
+    }
     setBookModalState({ isOpen: true, subjectId, editBook: null });
+  };
+
+  // Handler for opening Add Subject modal with rate limit check
+  const handleOpenSubjectModal = async (editing: Subject | null = null) => {
+    // Skip rate limit check if editing existing subject
+    if (!editing) {
+      const result = await checkLimit('subjects');
+      if (result && !result.canUse) {
+        setUpgradeModal({
+          isOpen: true,
+          featureName: result.featureName,
+          limit: result.limit
+        });
+        return;
+      }
+    }
+    setEditingSubject(editing);
+    setIsSubjectModalOpen(true);
   };
 
   const handleEditBook = (subjectId: string, book: Book) => {
@@ -593,10 +631,7 @@ useEffect(() => {
                     Create your first subject to start organizing your books and learning materials.
                   </p>
                   <button 
-                    onClick={() => {
-                      setEditingSubject(null);
-                      setIsSubjectModalOpen(true);
-                    }}
+                    onClick={() => handleOpenSubjectModal(null)}
                     className="bg-purple-600 hover:bg-purple-500 text-white px-6 py-3 rounded-xl font-medium flex items-center gap-2 transition-all hover:scale-105 shadow-[0_0_20px_rgba(147,51,234,0.3)]"
                   >
                     <Plus className="w-5 h-5" />
@@ -609,10 +644,7 @@ useEffect(() => {
                 <div className="flex justify-between items-end mb-6">
                   <h2 className="text-2xl font-semibold">My Subjects</h2>
                   <button 
-                    onClick={() => {
-                      setEditingSubject(null);
-                      setIsSubjectModalOpen(true);
-                    }}
+                    onClick={() => handleOpenSubjectModal(null)}
                     className="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-all active:scale-95 shadow-[0_0_15px_rgba(147,51,234,0.3)]"
                   >
                     <Plus className="w-4 h-4" />
@@ -671,6 +703,14 @@ useEffect(() => {
             onConfirm={handleConfirmDelete}
             title={`Delete ${deleteConfirm.type === 'subject' ? 'Subject' : 'Book'}?`}
             message={`Are you sure you want to delete "${deleteConfirm.name}"? This action cannot be undone.`}
+          />
+
+          <UpgradePlanModal
+            isOpen={upgradeModal.isOpen}
+            onClose={() => setUpgradeModal({ ...upgradeModal, isOpen: false })}
+            featureName={upgradeModal.featureName}
+            limit={upgradeModal.limit}
+            currentTier={subscriptionTier}
           />
         </div>
       </div>
