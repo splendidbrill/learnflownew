@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import { 
   Check, 
@@ -9,12 +9,20 @@ import {
   Crown, 
   Loader2, 
   ArrowLeft,
-  AlertCircle 
+  AlertCircle,
+  CreditCard
 } from "lucide-react";
 import { User } from "@supabase/supabase-js";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Sidebar } from "@/app/dashboard/Sidebar";
+
+// Declare Razorpay type for TypeScript
+declare global {
+  interface Window {
+    Razorpay: any;
+  }
+}
 
 interface PricingPageProps {
   user: User;
@@ -25,6 +33,8 @@ interface Plan {
   value: string;
   price: string;
   priceNum: number;
+  priceInr: number; // Price in INR
+  priceInrDisplay: string;
   period: string;
   description: string;
   features: string[];
@@ -38,6 +48,8 @@ const plans: Plan[] = [
     value: "scholar",
     price: "$20",
     priceNum: 20,
+    priceInr: 1700,
+    priceInrDisplay: "₹1,700",
     period: "per month",
     description: "Individual Students",
     features: [
@@ -59,6 +71,8 @@ const plans: Plan[] = [
     value: "master",
     price: "$49",
     priceNum: 49,
+    priceInr: 4200,
+    priceInrDisplay: "₹4,200",
     period: "per month",
     description: "Power Learners",
     features: [
@@ -80,6 +94,8 @@ const plans: Plan[] = [
     value: "elite",
     price: "$99",
     priceNum: 99,
+    priceInr: 8400,
+    priceInrDisplay: "₹8,400",
     period: "per month",
     description: "Teams & Groups",
     features: [
@@ -99,6 +115,14 @@ const plans: Plan[] = [
 ];
 
 const TIER_ORDER = ["explorer", "scholar", "master", "elite"];
+
+// INR prices for upgrade calculation
+const TIER_PRICES_INR: Record<string, number> = {
+  explorer: 0,
+  scholar: 1700,
+  master: 4200,
+  elite: 8400
+};
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
@@ -130,13 +154,36 @@ export default function PricingPage({ user }: PricingPageProps) {
     fetchBalance();
   }, [user.id]);
 
+  // Load Razorpay checkout script
+  const loadRazorpayScript = useCallback(() => {
+    return new Promise((resolve) => {
+      if (window.Razorpay) {
+        resolve(true);
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.onload = () => resolve(true);
+      script.onerror = () => resolve(false);
+      document.body.appendChild(script);
+    });
+  }, []);
+
+  // Handle Razorpay payment
   const handlePurchase = async (plan: Plan) => {
     setError(null);
     setSuccess(null);
     setPurchasing(plan.value);
 
     try {
-      const res = await fetch(`${API_URL}/api/subscription/purchase`, {
+      // 1. Load Razorpay script
+      const scriptLoaded = await loadRazorpayScript();
+      if (!scriptLoaded) {
+        throw new Error("Payment gateway failed to load");
+      }
+
+      // 2. Create order on backend
+      const orderRes = await fetch(`${API_URL}/api/payment/create-order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -145,33 +192,90 @@ export default function PricingPage({ user }: PricingPageProps) {
         })
       });
 
-      const data = await res.json();
+      const orderData = await orderRes.json();
 
-      if (!res.ok) {
-        throw new Error(data.detail || "Purchase failed");
+      if (!orderRes.ok) {
+        throw new Error(orderData.detail || "Failed to create order");
       }
 
-      setSuccess(`Successfully upgraded to ${plan.name}!`);
-      setCredits(data.remaining_credits);
-      setCurrentTier(data.new_tier);
+      // 3. Open Razorpay checkout
+      const options = {
+        key: orderData.key_id,
+        amount: orderData.amount,
+        currency: orderData.currency,
+        name: orderData.name,
+        description: orderData.description,
+        order_id: orderData.order_id,
+        prefill: orderData.prefill,
+        theme: {
+          color: "#9333ea" // Purple theme
+        },
+        handler: async (response: any) => {
+          // 4. Verify payment on backend
+          try {
+            const verifyRes = await fetch(`${API_URL}/api/payment/verify`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+                user_id: user.id,
+                tier: plan.value
+              })
+            });
 
-      // Redirect after success
-      setTimeout(() => {
-        router.push("/profile");
-      }, 2000);
+            const verifyData = await verifyRes.json();
+
+            if (!verifyRes.ok) {
+              throw new Error(verifyData.detail || "Payment verification failed");
+            }
+
+            setSuccess(`Successfully upgraded to ${plan.name}!`);
+            setCurrentTier(plan.value);
+
+            // Redirect after success
+            setTimeout(() => {
+              router.push("/profile");
+            }, 2000);
+
+          } catch (err: any) {
+            setError(err.message || "Payment verification failed");
+          }
+        },
+        modal: {
+          ondismiss: () => {
+            setPurchasing(null);
+          }
+        }
+      };
+
+      const razorpay = new window.Razorpay(options);
+      razorpay.open();
 
     } catch (err: any) {
-      setError(err.message || "Failed to purchase");
-    } finally {
+      setError(err.message || "Failed to initiate payment");
       setPurchasing(null);
     }
   };
 
   const currentTierIndex = TIER_ORDER.indexOf(currentTier);
 
+  // Can purchase if tier is higher than current (payment via Razorpay, no credits needed)
   const canPurchase = (plan: Plan) => {
     const planTierIndex = TIER_ORDER.indexOf(plan.value);
-    return planTierIndex > currentTierIndex && credits >= plan.credits;
+    return planTierIndex > currentTierIndex;
+  };
+
+  // Calculate upgrade price (pay the difference)
+  const getUpgradePrice = (plan: Plan): { amount: number; display: string } => {
+    const currentPrice = TIER_PRICES_INR[currentTier] || 0;
+    const targetPrice = plan.priceInr;
+    const upgradeAmount = targetPrice - currentPrice;
+    return {
+      amount: upgradeAmount,
+      display: `₹${upgradeAmount.toLocaleString('en-IN')}`
+    };
   };
 
   const getPlanStatus = (plan: Plan) => {
@@ -181,11 +285,7 @@ export default function PricingPage({ user }: PricingPageProps) {
       return planTierIndex === currentTierIndex ? "current" : "owned";
     }
     
-    if (credits >= plan.credits) {
-      return "available";
-    }
-    
-    return "insufficient";
+    return "available";
   };
 
   if (loading) {
@@ -297,17 +397,12 @@ export default function PricingPage({ user }: PricingPageProps) {
                         <span className="text-slate-400">/ {plan.period}</span>
                       </div>
 
-                      {/* Credit Cost */}
-                      <div className="flex items-center gap-2 bg-amber-500/10 px-4 py-2 rounded-xl border border-amber-500/20">
-                        <Coins className="w-4 h-4 text-amber-400" />
-                        <span className="text-amber-300 font-medium">
-                          {plan.credits} credits
+                      {/* INR Price */}
+                      <div className="flex items-center gap-2 bg-purple-500/10 px-4 py-2 rounded-xl border border-purple-500/20">
+                        <CreditCard className="w-4 h-4 text-purple-400" />
+                        <span className="text-purple-300 font-medium">
+                          Pay {plan.priceInrDisplay}
                         </span>
-                        {status === "insufficient" && (
-                          <span className="text-red-400 text-xs ml-auto">
-                            Need {plan.credits - credits} more
-                          </span>
-                        )}
                       </div>
                     </div>
 
@@ -348,11 +443,14 @@ export default function PricingPage({ user }: PricingPageProps) {
                         "Already Owned"
                       ) : canPurchase(plan) ? (
                         <>
-                          <Coins className="w-5 h-5" />
-                          Buy with {plan.credits} Credits
+                          <CreditCard className="w-5 h-5" />
+                          {currentTier === "explorer" 
+                            ? `Subscribe for ${plan.priceInrDisplay}`
+                            : `Upgrade for ${getUpgradePrice(plan).display}`
+                          }
                         </>
                       ) : (
-                        "Insufficient Credits"
+                        "Not Available"
                       )}
                     </button>
                   </div>
