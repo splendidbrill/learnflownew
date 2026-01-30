@@ -562,6 +562,9 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     setAnalyzingParaId(para.id);
 
     try {
+      // Get current user for saving to DB
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      
       const res = await fetch(`${API_URL}/api/analyze-image`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -590,6 +593,21 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
           imageUrl: para.content,
         },
       ]);
+      
+      // Set active paragraph so Next Paragraph button appears
+      setActiveParagraphId(para.id);
+      
+      // Save diagram explanation to database so it persists after refresh
+      if (currentUser?.id && selectedChapter && data.explanation) {
+        console.log("💾 Saving Diagram Explanation to DB...");
+        await supabase.from("chat_logs").insert({
+          chapter_id: selectedChapter.id,
+          user_id: currentUser.id,
+          role: "assistant",
+          content: data.explanation,
+        });
+        console.log("✅ Diagram Explanation Saved!");
+      }
     } catch (e) {
       console.error(e);
       alert("Failed to analyze image");

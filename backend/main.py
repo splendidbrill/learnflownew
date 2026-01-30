@@ -18,7 +18,8 @@ from services.tts_service import generate_audio
 from langchain_openai import ChatOpenAI 
 from langchain_core.messages import HumanMessage, SystemMessage
 from db import supabase 
-from services.vision_service import analyze_diagram
+from services.vision_service import analyze_diagram, describe_image
+from services.mermaid_service import generate_concept_diagram, personalize_image_explanation
 from routers import scheduler, stats, admin, subscription, rate_limits, payment
 
 # 1. Load Env
@@ -99,7 +100,25 @@ class ChatRequest(BaseModel):
 class PatternRequest(BaseModel):
     completedBlockIds: list[str]
 
+class MermaidRequest(BaseModel):
+    content: str
+    diagram_type: str = "flowchart"  # flowchart, mindmap, sequence, timeline
+    chapterId: str | None = None
+
 # --- ENDPOINTS ---
+
+# 📊 MERMAID DIAGRAM GENERATION
+@app.post("/api/generate-diagram")
+async def generate_diagram_endpoint(req: MermaidRequest):
+    """Generate a Mermaid.js diagram from educational content"""
+    print(f"📊 Generating {req.diagram_type} diagram...")
+    
+    result = generate_concept_diagram(req.content, req.diagram_type)
+    
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to generate diagram"))
+    
+    return result
 
 # 🧠 A. MATH PATTERN RECOGNITION
 @app.post("/api/detect-pattern")
@@ -147,20 +166,43 @@ async def detect_pattern_endpoint(req: PatternRequest):
         print(f"Pattern Error: {e}")
         return {"found": False}
 
-# 👁️ B. DIAGRAM EXPLAINER (Context Aware)
+# 👁️ B. DIAGRAM EXPLAINER (Two-Stage Caching)
 @app.post("/api/analyze-image")
 async def analyze_image_endpoint(req: ImageAnalysisRequest):
-    print(f"👁️ Analyze Request | Context: {req.context}")
+    print(f"👁️ Analyze Request | Context: {req.context} | Interest: {req.analogyTopic}")
 
-    # Check Cache
-    existing = supabase.table("paragraphs").select("explanation").eq("id", req.paragraphId).single().execute()
+    # Step 1: Check if we already have a personalized explanation for this user's interest
+    existing = supabase.table("paragraphs").select("explanation, image_description, analogy_topic").eq("id", req.paragraphId).single().execute()
+    
+    # If we have a cached explanation with the SAME interest, return it
     if existing.data and existing.data.get("explanation"):
-        return {"explanation": existing.data["explanation"]}
+        cached_topic = existing.data.get("analogy_topic", "")
+        if cached_topic.lower() == req.analogyTopic.lower():
+            print(f"✅ Returning cached explanation (same interest)")
+            return {"explanation": existing.data["explanation"]}
+    
+    # Step 2: Check if we have a cached IMAGE DESCRIPTION (the expensive part)
+    image_description = existing.data.get("image_description") if existing.data else None
+    
+    if not image_description:
+        # No cached description - call Vision API ONCE to describe the image
+        print(f"🔍 No cached description. Calling Vision API...")
+        image_description = await describe_image(req.imageUrl, req.context)
+        
+        # Cache the description for future users
+        if "Error" not in image_description:
+            supabase.table("paragraphs").update({
+                "image_description": image_description
+            }).eq("id", req.paragraphId).execute()
+            print(f"💾 Cached image description")
+    else:
+        print(f"✅ Using cached image description")
+    
+    # Step 3: Personalize with user's interest using DeepSeek (cheap!)
+    print(f"🎨 Personalizing with interest: {req.analogyTopic}")
+    explanation = personalize_image_explanation(image_description, req.analogyTopic, req.context)
 
-    # Call Vision Service (Context is crucial here)
-    explanation = await analyze_diagram(req.imageUrl, req.analogyTopic, req.context)
-
-    # Save to DB
+    # Save the personalized explanation
     if "Error" not in explanation:
         supabase.table("paragraphs").update({
             "explanation": explanation,
@@ -324,19 +366,96 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
                         "start_page": max(1, t[2] + pdf_offset)
                     })
         else:
-            # NO TOC FALLBACK: Create a single chapter covering entire book
-            print("📖 No TOC found. Creating single chapter for entire book.")
+            # NO TOC FALLBACK: Try AI-based chapter detection
+            print("📖 No TOC found. Attempting AI-based chapter detection...")
             
-            # Get book title from DB for the chapter name
-            book_res = supabase.table("course_books").select("title").eq("id", book_id).single().execute()
-            book_title = "Full Book"
-            if book_res.data and book_res.data.get("title"):
-                book_title = book_res.data["title"]
+            # Extract text from first 50 pages to find TOC and chapter headings
+            sample_text = ""
+            for page_num in range(min(50, len(doc))):
+                page = doc[page_num]
+                page_text = page.get_text()
+                sample_text += f"\n--- PAGE {page_num + 1} ---\n{page_text[:2000]}"
             
-            chapters_to_save.append({
-                "title": book_title,
-                "start_page": 1
-            })
+            # Use DeepSeek to detect chapters
+            try:
+                detection_prompt = f"""
+Analyze this PDF text to find ALL chapters and their page numbers.
+
+TEXT FROM PDF (with page markers):
+{sample_text[:12000]}
+
+TASK: Find the Table of Contents or Contents page and extract ALL chapters with their CORRECT page numbers.
+
+Look for:
+1. A "Contents" or "Table of Contents" page that lists chapters with page numbers
+2. Chapter headings like "Chapter 1 ........ 15" or "Unit 1 - Introduction ... 23"
+3. Any structured list of sections with page numbers
+
+Extract ALL chapters found. Use the page numbers shown in the Contents listing, NOT the PDF page number where you found the listing.
+
+Return a JSON array:
+[
+  {{"title": "Chapter 1: Introduction", "page": 15}},
+  {{"title": "Chapter 2: Basics", "page": 32}},
+  {{"title": "Chapter 3: Advanced", "page": 58}}
+]
+
+CRITICAL:
+- Find ALL chapters, not just the first few
+- Use the page numbers from the contents listing (like "Chapter 1 ...... 15" means page 15)
+- Return ONLY valid JSON, no explanation
+"""
+                
+                # Use higher max_tokens to ensure all chapters are returned
+                response = llm.bind(max_tokens=2000).invoke([
+                    SystemMessage(content="You extract chapter tables of contents from PDFs. Find ALL chapters and their CORRECT page numbers from the contents listing. Output only valid JSON array."),
+                    HumanMessage(content=detection_prompt)
+                ])
+                
+                # Parse the AI response
+                ai_response = response.content.strip()
+                print(f"🤖 AI Raw Response: {ai_response[:500]}...")
+                
+                # Clean up markdown if present
+                ai_response = ai_response.replace("```json", "").replace("```", "").strip()
+                
+                detected_chapters = json.loads(ai_response)
+                print(f"📋 Parsed chapters: {detected_chapters}")
+                
+                if detected_chapters and len(detected_chapters) > 0:
+                    # Filter out non-chapters (preface, foreword, acknowledgements, notes, etc.)
+                    exclude_keywords = ['foreword', 'preface', 'acknowledgement', 'introduction by', 
+                                       'note for', 'notes for', 'about the', 'dedication', 'contents',
+                                       'table of', 'index', 'appendix', 'glossary', 'bibliography']
+                    
+                    filtered_chapters = []
+                    for chap in detected_chapters:
+                        title = chap.get("title", "").lower()
+                        if not any(kw in title for kw in exclude_keywords):
+                            filtered_chapters.append(chap)
+                    
+                    print(f"🎯 AI detected {len(detected_chapters)} entries, kept {len(filtered_chapters)} chapters!")
+                    
+                    for chap in filtered_chapters:
+                        chapters_to_save.append({
+                            "title": chap.get("title", "Untitled Chapter"),
+                            "start_page": max(1, chap.get("page", 1))
+                        })
+                else:
+                    raise ValueError("No chapters detected - empty array")
+                    
+            except Exception as ai_err:
+                print(f"⚠️ AI chapter detection failed: {ai_err}")
+                # Final fallback: Create single chapter
+                book_res = supabase.table("course_books").select("title").eq("id", book_id).single().execute()
+                book_title = "Full Book"
+                if book_res.data and book_res.data.get("title"):
+                    book_title = book_res.data["title"]
+                
+                chapters_to_save.append({
+                    "title": book_title,
+                    "start_page": 1
+                })
 
         # Save to DB
         supabase.table("chapters").delete().eq("book_id", book_id).execute()
@@ -434,14 +553,34 @@ async def process_chapter_content(chapter_id: str):
                     is_header = False
                     for line in block["lines"]:
                         for span in line["spans"]:
-                            block_text += span["text"] + " "
+                            span_text = span["text"]
+                            # Check if text might be reversed (common PDF issue)
+                            # If reversed text looks more like English, fix it
+                            if len(span_text) > 3:
+                                # Check if reversing makes it more readable
+                                reversed_text = span_text[::-1]
+                                # Simple heuristic: check for common English patterns
+                                common_words = ['the', 'and', 'is', 'are', 'of', 'in', 'to', 'for', 'that', 'with']
+                                original_matches = sum(1 for w in common_words if w in span_text.lower())
+                                reversed_matches = sum(1 for w in common_words if w in reversed_text.lower())
+                                if reversed_matches > original_matches:
+                                    span_text = reversed_text
+                            block_text += span_text + " "
                             if span["size"] > 14: is_header = True
                     
                     clean_text = block_text.strip()
-                    if not clean_text: continue
+                    if not clean_text or len(clean_text) < 3: continue
 
                     if is_header: 
                         current_section = clean_text[:60] # Update Context
+                    
+                    # Merge short text with previous paragraph if exists
+                    if len(clean_text) < 50 and not is_header and paragraphs_to_insert:
+                        last_para = paragraphs_to_insert[-1]
+                        if last_para["type"] == "text" and len(last_para["content"]) < 500:
+                            # Merge with previous paragraph
+                            last_para["content"] += " " + clean_text
+                            continue
                     
                     # We store as 'text' or 'header' to satisfy DB Constraints
                     # We will detect 'example' patterns later in Python

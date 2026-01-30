@@ -1,28 +1,54 @@
+"""
+Vision Service - Diagram analysis using Azure GPT-4.1 mini
+"""
+
 import os
 from openai import AsyncAzureOpenAI
 from dotenv import load_dotenv
 
-# Load env vars explicitly to be safe
 load_dotenv()
 
-# --- CONFIGURATION FROM .ENV ---
-VISION_ENDPOINT = os.getenv("AZURE_VISION_ENDPOINT")
-VISION_API_KEY = os.getenv("AZURE_VISION_API_KEY")
-VISION_DEPLOYMENT = os.getenv("AZURE_VISION_DEPLOYMENT") # Should be "gpt-4.1-mini"
-VISION_API_VERSION = os.getenv("AZURE_VISION_API_VERSION") # Should be "2025-01-01-preview"
+# --- AZURE CONFIGURATION ---
+AZURE_VISION_ENDPOINT = os.getenv("AZURE_VISION_ENDPOINT")
+AZURE_VISION_API_KEY = os.getenv("AZURE_VISION_API_KEY")
+AZURE_VISION_DEPLOYMENT = os.getenv("AZURE_VISION_DEPLOYMENT")
+AZURE_VISION_API_VERSION = os.getenv("AZURE_VISION_API_VERSION")
 
-async def analyze_diagram(image_url: str, topic: str, context_text: str = ""):
+print(f"👁️ Vision Service: Azure GPT-4.1 mini")
+
+
+async def describe_image(image_url: str, context_text: str = "") -> str:
     """
-    Analyzes a diagram using Azure OpenAI.
+    Get a factual description of an image (cached per image).
+    This is the ONE-TIME call when book is uploaded.
+    Returns plain description without personalization.
     """
-    print(f"👁️ Analyzing with {VISION_DEPLOYMENT} | Context: {context_text}")
+    prompt = f"""
+    You are an expert at describing educational diagrams.
     
-    if not VISION_API_KEY or not VISION_ENDPOINT:
-        return "System Error: Azure Vision credentials missing in .env"
+    CONTEXT: This image is from a chapter about "{context_text}".
+    
+    TASK: Describe this image factually and completely:
+    1. List all text labels visible in the image
+    2. Identify what type of diagram this is (flowchart, anatomy, graph, etc.)
+    3. Describe the key elements, their relationships, and what concept it illustrates
+    
+    Be thorough but concise. This description will be used to generate personalized explanations later.
+    Keep under 200 words.
+    """
+    
+    return await _azure_vision(image_url, prompt)
 
-    # --- PROMPT STRATEGY ---
-    # 1. Force reading labels to ground the AI (prevents hallucination).
-    # 2. Use the 'context_text' (Chapter Title) to differentiate similar diagrams.
+
+async def analyze_diagram(image_url: str, topic: str, context_text: str = "") -> str:
+    """
+    Analyzes a diagram with personalized analogies using Azure GPT-4.1 mini.
+    """
+    print(f"👁️ Analyzing with {AZURE_VISION_DEPLOYMENT} | Context: {context_text}")
+    
+    if not AZURE_VISION_API_KEY or not AZURE_VISION_ENDPOINT:
+        return "System Error: Azure Vision credentials missing in .env"
+    
     prompt = f"""
     You are an expert personalized Tutor.
     
@@ -37,33 +63,35 @@ async def analyze_diagram(image_url: str, topic: str, context_text: str = ""):
     
     Keep the explanation clear, encouraging, and under 150 words.
     """
+    
+    return await _azure_vision(image_url, prompt)
 
+
+async def _azure_vision(image_url: str, prompt: str) -> str:
+    """Azure OpenAI Vision implementation"""
+    if not AZURE_VISION_API_KEY or not AZURE_VISION_ENDPOINT:
+        return "System Error: Azure Vision credentials missing in .env"
+    
     try:
-        # Initialize Client using .env values
         client = AsyncAzureOpenAI(
-            azure_endpoint=VISION_ENDPOINT,
-            api_key=VISION_API_KEY,
-            api_version=VISION_API_VERSION
+            azure_endpoint=AZURE_VISION_ENDPOINT,
+            api_key=AZURE_VISION_API_KEY,
+            api_version=AZURE_VISION_API_VERSION
         )
 
         response = await client.chat.completions.create(
-            model=VISION_DEPLOYMENT, 
+            model=AZURE_VISION_DEPLOYMENT, 
             messages=[
                 {
                     "role": "user",
                     "content": [
                         {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url", 
-                            "image_url": {
-                                "url": image_url
-                            }
-                        },
+                        {"type": "image_url", "image_url": {"url": image_url}},
                     ],
                 }
             ],
             max_tokens=800, 
-            temperature=0.3 # Lower temperature = Less hallucination
+            temperature=0.3
         )
 
         return response.choices[0].message.content
