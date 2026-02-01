@@ -215,7 +215,7 @@ async def analyze_image_endpoint(req: ImageAnalysisRequest):
 # 💬 C. CHAT & PROGRESS
 # Replace the existing /chat endpoint in main.py
 
-@app.post("/chat")
+@app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest):
     system_context = "You are a helpful AI Tutor."
     
@@ -282,13 +282,13 @@ async def chat_endpoint(req: ChatRequest):
 
     return StreamingResponse(response_generator(), media_type="text/plain")
 
-@app.post("/ingest")
+@app.post("/api/ingest")
 async def ingest_book(req: IngestRequest, background_tasks: BackgroundTasks):
     supabase.table("course_books").update({"status": "processing"}).eq("id", req.bookId).execute()
     background_tasks.add_task(process_book, req.bookId, req.fileUrl, req.interest, req.bookType)
     return {"status": "processing_started"}
 
-@app.post("/generate_chapter")
+@app.post("/api/generate_chapter")
 async def generate_chapter(req: GenerateChapterRequest, background_tasks: BackgroundTasks):
     background_tasks.add_task(process_chapter_content, req.chapterId)
     return {"status": "started", "message": "Generating..."}

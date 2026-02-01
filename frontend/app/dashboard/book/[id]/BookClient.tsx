@@ -538,7 +538,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     setBookStatus("processing");
 
     try {
-      const response = await fetch(`${API_URL}/ingest`, {
+      const response = await fetch(`${API_URL}/api/ingest`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -621,7 +621,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     if (!selectedChapter) return;
     setIsGenerating(true);
     try {
-      await fetch(`${API_URL}/generate_chapter`, {
+      await fetch(`${API_URL}/api/generate_chapter`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chapterId: selectedChapter.id }),
@@ -700,7 +700,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
       }
 
       // 4. CALL AI
-      const response = await fetch(`${API_URL}/chat`, {
+      const response = await fetch(`${API_URL}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
