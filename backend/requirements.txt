@@ -23,3 +23,6 @@ edge-tts
 aiofiles
 python-telegram-bot
 resend
+razorpay
+langchain-openai
+gunicorn

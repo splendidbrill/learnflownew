@@ -9,3 +9,8 @@ frontend/.env.local
 .env.local
 backend/.env
 backend/.env.local
+
+# SSH Keys (NEVER commit these!)
+*.pem
+*.ppk
+learnflow-key*

@@ -225,3 +225,87 @@ async def send_with_mailgun(to_email: str, subject: str, html_content: str):
                 
     except Exception as e:
         raise Exception(f"Mailgun error: {str(e)}")
+
+
+async def send_contact_email(data: dict):
+    """
+    Send contact form submission to admin
+    """
+    admin_email = "splendidbrill@gmail.com"
+    subject = f"📩 New Contact: {data.get('firstName')} {data.get('lastName')}"
+    
+    # Format plan details if present
+    plan_info = ""
+    if data.get('isCustomer') == "yes":
+        plan_info = f"""
+        <div style="background: #eef2ff; padding: 12px; border-radius: 6px; margin: 12px 0;">
+            <strong>💎 Status:</strong> Existing Customer<br>
+            <strong>📊 Plan:</strong> {data.get('plan', 'Not specified')}
+        </div>
+        """
+    else:
+        plan_info = """
+        <div style="background: #fdf2f8; padding: 12px; border-radius: 6px; margin: 12px 0;">
+            <strong>👤 Status:</strong> New Visitor (Not a customer)
+        </div>
+        """
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; padding: 20px; }}
+            .container {{ max-width: 600px; margin: 0 auto; background: white; border: 1px solid #eee; border-radius: 8px; padding: 24px; }}
+            .header {{ border-bottom: 2px solid #7c3aed; padding-bottom: 12px; margin-bottom: 24px; }}
+            .field {{ margin-bottom: 16px; }}
+            .label {{ color: #666; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }}
+            .value {{ font-size: 16px; color: #1e1e1e; font-weight: 500; margin-top: 4px; }}
+            .message-box {{ background: #f9fafb; padding: 16px; border-radius: 8px; border-left: 4px solid #7c3aed; margin-top: 24px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h2>New Contact Message</h2>
+            </div>
+            
+            <div class="field">
+                <div class="label">From</div>
+                <div class="value">{data.get('firstName')} {data.get('lastName')}</div>
+            </div>
+            
+            <div class="field">
+                <div class="label">Email</div>
+                <div class="value"><a href="mailto:{data.get('email')}">{data.get('email')}</a></div>
+            </div>
+
+            {plan_info}
+            
+            <div class="message-box">
+                <div class="label">Message</div>
+                <div class="value" style="white-space: pre-wrap;">{data.get('message')}</div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    # Try Resend first
+    try:
+        result = await send_with_resend(admin_email, subject, html_content)
+        if result:
+            print(f"✅ Contact email sent to {admin_email}")
+            return True
+    except Exception as e:
+        print(f"⚠️ Resend failed: {e}, trying Mailgun...")
+
+    # Fallback to Mailgun
+    try:
+        result = await send_with_mailgun(admin_email, subject, html_content)
+        if result:
+            return True
+    except Exception as e:
+        print(f"❌ Mailgun also failed: {e}")
+        
+    return False

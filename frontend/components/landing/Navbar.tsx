@@ -93,9 +93,26 @@ export default function Navbar() {
     { name: "Features", href: "#features" },
     { name: "How It Works", href: "#how-it-works" },
     { name: "Pricing", href: "#paid-plans" },
+    { name: "Contact", href: "/contact" },
   ];
 
   const scrollToSection = (href: string) => {
+    // 1. Handle Route Navigation (e.g. /contact)
+    if (href.startsWith("/")) {
+      router.push(href);
+      setIsMobileMenuOpen(false);
+      return;
+    }
+
+    // 2. Handle Scroll (Landing Page)
+    // If we are not on the home page, go there first
+    if (window.location.pathname !== "/") {
+      router.push("/" + href);
+      setIsMobileMenuOpen(false);
+      return;
+    }
+
+    // 3. Normal Scroll
     const element = document.querySelector(href);
     if (element) {
       const offset = 100;
