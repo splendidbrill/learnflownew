@@ -387,9 +387,9 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
             # NO TOC FALLBACK: Try AI-based chapter detection
             print("📖 No TOC found. Attempting AI-based chapter detection...")
             
-            # Extract text from first 50 pages to find TOC and chapter headings
+            # Extract text from first 100 pages to find TOC and chapter headings
             sample_text = ""
-            for page_num in range(min(50, len(doc))):
+            for page_num in range(min(100, len(doc))):
                 page = doc[page_num]
                 page_text = page.get_text()
                 sample_text += f"\n--- PAGE {page_num + 1} ---\n{page_text[:2000]}"

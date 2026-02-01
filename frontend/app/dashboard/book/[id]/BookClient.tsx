@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import { Suspense } from "react";
 
-import { useRouter, useSearchParams } from "next/navigation"; // <--- Add useSearchParams
+import { useRouter, useSearchParams } from "next/navigation"; // <--- Add useSearchParams (Force Update)
 import {
   Menu,
   X,
