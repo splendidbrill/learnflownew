@@ -359,9 +359,26 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
         
         # Build Chapter List
         if len(toc) > 0:
+            # Analyze TOC Structure
+            level_1_items = [t for t in toc if t[0] == 1]
+            level_2_items = [t for t in toc if t[0] == 2]
+            
+            # Smart Selection Strategy
+            include_level_2 = False
+            
+            # Case A: Very few Level 1 items (e.g. just "Parts") but many Level 2 ("Chapters")
+            if len(level_1_items) < 5 and len(level_2_items) > 5:
+                include_level_2 = True
+            
+            # Case B: No Level 1 items at all
+            if not level_1_items:
+                include_level_2 = True
+
             for t in toc:
-                # Filter out Level 2+ if we have Level 1, else take all
-                if t[0] == 1 or not [x for x in toc if x[0] == 1]: 
+                # Logic: Keep if Lvl 1 OR (Lvl 2 AND we decided to include them)
+                if t[0] == 1 or (t[0] == 2 and include_level_2):
+                    # Optional: Check keywords if it's Level 2 to avoid noise? 
+                    # For now, let's just be inclusive.
                     chapters_to_save.append({
                         "title": t[1],
                         "start_page": max(1, t[2] + pdf_offset)
