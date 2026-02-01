@@ -57,7 +57,7 @@ export default function Footer() {
                   <Brain className="w-6 h-6 text-white" />
                 </div>
                 <span className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
-                  LearnFlow
+                  LearningFlux
                 </span>
               </div>
               <p className="text-slate-400 mb-6 max-w-sm">

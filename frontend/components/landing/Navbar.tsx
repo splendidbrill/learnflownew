@@ -146,7 +146,13 @@ export default function Navbar() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 className="flex items-center gap-2 cursor-pointer"
-                onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+                onClick={() => {
+                  if (window.location.pathname === "/") {
+                    window.scrollTo({ top: 0, behavior: "smooth" });
+                  } else {
+                    router.push("/");
+                  }
+                }}
               >
                 <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-cyan-500 rounded-xl flex items-center justify-center">
                   <Brain className="w-6 h-6 text-white" />
