@@ -119,7 +119,7 @@ export default function Pricing(): JSX.Element {
                   <span className="text-slate-400">/ Month</span>
                 </div>
                 <p className="text-slate-400 text-sm mt-2">
-                  Perfect for trying out LearnFlow
+                  Perfect for trying out LearningFlux
                 </p>
                 <Button className="w-full mt-6 py-8 text-xl font-bold rounded-xl bg-gradient-to-r from-purple-500 to-cyan-500 hover:from-purple-600 hover:to-cyan-600 text-white shadow-lg shadow-purple-500/30">
                   Get Started

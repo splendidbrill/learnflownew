@@ -152,7 +152,7 @@ export default function Navbar() {
                   <Brain className="w-6 h-6 text-white" />
                 </div>
                 <span className="text-2xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
-                  LearnFlow
+                  LearningFlux
                 </span>
               </motion.div>
 
@@ -356,7 +356,7 @@ export default function Navbar() {
                     <Brain className="w-8 h-8 text-white" />
                   </div>
                   <h2 className="text-3xl font-bold text-white mb-2">
-                    Welcome to LearnFlow
+                    Welcome to LearningFlux
                   </h2>
                   <p className="text-slate-400">
                     Sign in to start your learning journey

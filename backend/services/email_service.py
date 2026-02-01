@@ -71,7 +71,7 @@ async def send_30min_reminder_email(to_email: str, user_id: str, session_id: str
             </p>
             
             <div class="footer">
-                <p>LearnFlow - Build a Learning Habit</p>
+                <p>LearningFlux - Build a Learning Habit</p>
             </div>
         </div>
     </body>
@@ -137,12 +137,12 @@ async def send_5min_reminder_email(to_email: str, user_id: str):
             
             <div style="text-align: center; margin-top: 24px;">
                 <a href="{APP_URL}" style="color: #7c3aed; text-decoration: none; font-weight: bold;">
-                    → Open LearnFlow
+                    → Open LearningFlux
                 </a>
             </div>
             
             <div class="footer">
-                <p>LearnFlow - Build a Learning Habit</p>
+                <p>LearningFlux - Build a Learning Habit</p>
             </div>
         </div>
     </body>

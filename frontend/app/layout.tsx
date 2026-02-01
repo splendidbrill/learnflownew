@@ -5,7 +5,7 @@
 // const inter = Inter({ subsets: ["latin"] });
 
 // export const metadata: Metadata = {
-//   title: "LearnFlow - AI Tutor",
+//   title: "LearningFlux - AI Tutor",
 //   description: "Learn complex topics with AI analogies",
 // };
 
@@ -31,7 +31,7 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "LearnFlow",
+  title: "LearningFlux",
   description: "AI Tutor Platform",
 };
 

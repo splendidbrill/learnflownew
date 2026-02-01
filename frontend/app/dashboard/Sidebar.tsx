@@ -241,7 +241,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ user }) => {
             <div className="w-8 h-8 bg-gradient-to-br from-purple-500 to-cyan-500 rounded-lg flex items-center justify-center shrink-0">
               <span className="text-white font-bold">L</span>
             </div>
-            <span className="font-bold text-white">LearnFlow</span>
+            <span className="font-bold text-white">LearningFlux</span>
           </div>
         )}
         {isCollapsed && (
