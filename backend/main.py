@@ -387,9 +387,10 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
             # NO TOC FALLBACK: Try AI-based chapter detection
             print("📖 No TOC found. Attempting AI-based chapter detection...")
             
-            # Extract text from first 100 pages to find TOC and chapter headings
+            # Extract text from WHOLE BOOK to find TOC (Don't limit to 100 pages)
             sample_text = ""
-            for page_num in range(min(100, len(doc))):
+            # Limit to first 500 pages to avoid memory explosion on massive books, but 500 covers most TOCs
+            for page_num in range(min(500, len(doc))):
                 page = doc[page_num]
                 page_text = page.get_text()
                 sample_text += f"\n--- PAGE {page_num + 1} ---\n{page_text[:2000]}"
@@ -577,10 +578,12 @@ async def process_chapter_content(chapter_id: str):
                             if len(span_text) > 3:
                                 # Check if reversing makes it more readable
                                 reversed_text = span_text[::-1]
-                                # Simple heuristic: check for common English patterns
-                                common_words = ['the', 'and', 'is', 'are', 'of', 'in', 'to', 'for', 'that', 'with']
+                                # Expanded heuristic
+                                common_words = ['the', 'and', 'is', 'are', 'of', 'in', 'to', 'for', 'that', 'with', 'from', 'have', 'this', 'what', 'separation', 'process', 'substance', 'change', 'describe'] 
                                 original_matches = sum(1 for w in common_words if w in span_text.lower())
                                 reversed_matches = sum(1 for w in common_words if w in reversed_text.lower())
+                                
+                                # Stronger signal: If original has basically 0 matches and reversed has many
                                 if reversed_matches > original_matches:
                                     span_text = reversed_text
                             block_text += span_text + " "
@@ -592,13 +595,27 @@ async def process_chapter_content(chapter_id: str):
                     if is_header: 
                         current_section = clean_text[:60] # Update Context
                     
-                    # Merge short text with previous paragraph if exists
-                    if len(clean_text) < 50 and not is_header and paragraphs_to_insert:
+                    # Merge logic: Fix "One-Liners"
+                    # If this block is text (not header) and previous block was text (not header)
+                    # AND previous block didn't end with a strong stop (.!?) OR this one is short
+                    if not is_header and paragraphs_to_insert:
                         last_para = paragraphs_to_insert[-1]
-                        if last_para["type"] == "text" and len(last_para["content"]) < 500:
-                            # Merge with previous paragraph
-                            last_para["content"] += " " + clean_text
-                            continue
+                        
+                        # Merge if:
+                        # 1. Last para is text
+                        # 2. This text is short (<300 chars) OR Last para appears incomplete (no period)
+                        # 3. Last para isn't HUGE (>1500 chars)
+                        should_merge = False
+                        
+                        if last_para["type"] == "image": should_merge = False
+                        elif last_para["section_title"] != current_section: should_merge = False # Don't merge across sections
+                        elif len(clean_text) < 300: should_merge = True # Aggressively merge broken lines
+                        elif not last_para["content"].strip().endswith((".", "!", "?", ":")): should_merge = True # Merge if sentence continues
+                        
+                        if should_merge and len(last_para["content"]) < 2000:
+                             last_para["content"] += " " + clean_text
+                             continue # Skip adding new paragraph, we merged it
+
                     
                     # We store as 'text' or 'header' to satisfy DB Constraints
                     # We will detect 'example' patterns later in Python
