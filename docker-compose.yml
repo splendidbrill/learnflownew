@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: learnflow-backend
+    ports:
+      - "8000:8000"
+    # Mount code for dev (optional, but good for quick fixes on server without rebuild)
+    # volumes:
+    #   - ./backend:/app
+    env_file:
+      - .env
+    restart: always
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: learnflow-frontend
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    depends_on:
+      - backend
+    restart: always
