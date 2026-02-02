@@ -246,7 +246,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   // Polling for status
   useEffect(() => {
     const interval = setInterval(() => {
-      if (bookStatus === "processing") fetchBookData();
+      if (bookStatus?.startsWith("processing")) fetchBookData();
     }, 3000);
     return () => clearInterval(interval);
   }, [bookStatus, bookId]);
@@ -1122,7 +1122,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
               className={`px-4 py-1.5 rounded-full text-xs font-bold border uppercase ${
                 bookStatus === "completed"
                   ? "bg-green-500/10 text-green-400 border-green-500/20"
-                  : bookStatus === "processing"
+                  : bookStatus?.startsWith("processing")
                     ? "bg-blue-500/10 text-blue-400 border-blue-500/20 animate-pulse"
                     : bookStatus === "failed"
                       ? "bg-red-500/10 text-red-400 border-red-500/20"
@@ -1135,15 +1135,24 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
         </div>
 
         {/* PROCESSING STATE */}
-        {bookStatus === "processing" && (
+        {/* PROCESSING STATE */}
+        {bookStatus?.startsWith("processing") && (
           <div className="text-center py-20 border-2 border-dashed border-blue-500/30 rounded-3xl bg-blue-500/5 animate-pulse">
-            <Loader2 className="w-8 h-8 text-blue-400 animate-spin mx-auto mb-4" />
-            <h2 className="text-2xl font-bold text-white mb-2">
-              Analyzing Book Structure...
-            </h2>
-            <p className="text-blue-200/60">
-              AI is reading the Table of Contents.
-            </p>
+            <div className="w-full max-w-md mx-auto px-6">
+                 <div className="flex justify-between text-xs uppercase font-bold text-blue-300 mb-2">
+                   <span>Analyzing Book Structure...</span>
+                   <span>{parseInt(bookStatus.split('_')[1]) || 0}%</span>
+                 </div>
+                 <div className="w-full h-3 bg-blue-500/20 rounded-full overflow-hidden">
+                   <div 
+                       className="h-full bg-gradient-to-r from-blue-400 to-cyan-300 transition-all duration-500 ease-out"
+                       style={{ width: `${parseInt(bookStatus.split('_')[1]) || 0}%` }}
+                   ></div>
+                 </div>
+                 <p className="text-blue-200/60 mt-4 text-sm font-medium">
+                   AI is reading pages and identifying chapters...
+                 </p>
+            </div>
           </div>
         )}
 

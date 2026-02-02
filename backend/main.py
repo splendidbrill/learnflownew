@@ -313,6 +313,11 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
 
         # --- SMART OFFSET CALIBRATION (UPDATED) ---
         if len(toc) > 0:
+            # Report Progress for TOC Path
+            try:
+                supabase.table("course_books").update({"status": "processing_20"}).eq("id", book_id).execute()
+            except: pass
+
             # 1. Find a valid target chapter (avoid 'Contents' or 'Preface')
             valid_chapters = [t for t in toc if t[0] == 1 and "content" not in t[1].lower()]
             
@@ -326,6 +331,11 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
                 # Search +/- 20 pages
                 start_search = max(0, printed_page - 20)
                 end_search = min(len(doc), printed_page + 20)
+                
+                # Report Calibration Start
+                try: 
+                    supabase.table("course_books").update({"status": "processing_40"}).eq("id", book_id).execute()
+                except: pass
                 
                 found_true_page = -1
                 
@@ -357,6 +367,11 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
                 else:
                     print("⚠️ Could not verify offset with large text. Using Metadata raw.")
         
+        # Report Almost Done
+        try:
+             supabase.table("course_books").update({"status": "processing_80"}).eq("id", book_id).execute()
+        except: pass
+
         # Build Chapter List
         if len(toc) > 0:
             # Analyze TOC Structure
@@ -389,14 +404,27 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
             
             # Extract text from WHOLE BOOK to find TOC (Don't limit to 100 pages)
             sample_text = ""
+            max_scan_pages = min(500, len(doc))
+            
             # Limit to first 500 pages to avoid memory explosion on massive books, but 500 covers most TOCs
-            for page_num in range(min(500, len(doc))):
+            for page_num in range(max_scan_pages):
+                # --- PROGRESS UPDATE ---
+                if page_num % 10 == 0:
+                    percent = 10 + int((page_num / max_scan_pages) * 70) # Map 0-500 pages to 10-80%
+                    try:
+                        supabase.table("course_books").update({"status": f"processing_{percent}"}).eq("id", book_id).execute()
+                        print(f"⏳ Scan Progress: {percent}%")
+                    except: pass
+                
                 page = doc[page_num]
                 page_text = page.get_text()
                 sample_text += f"\n--- PAGE {page_num + 1} ---\n{page_text[:2000]}"
             
             # Use DeepSeek to detect chapters
             try:
+                # Update status before AI call
+                supabase.table("course_books").update({"status": "processing_90"}).eq("id", book_id).execute()
+
                 detection_prompt = f"""
 Analyze this PDF text to find ALL chapters and their page numbers.
 
