@@ -493,6 +493,68 @@ CRITICAL:
         print(f"❌ Error: {str(e)}")
         supabase.table("course_books").update({"status": "failed"}).eq("id", book_id).execute()
 
+# --- HELPER: Vector Diagram Detection ---
+def merge_rects(rects, threshold=15):
+    """Merges rectangles that are close to each other."""
+    if not rects: return []
+    rects.sort(key=lambda r: r.y0) # Sort by vertical position
+    merged = []
+    
+    current = rects[0]
+    for i in range(1, len(rects)):
+        next_rect = rects[i]
+        
+        # Check if close vertically and horizontally
+        # Expanded logic: if they overlap or constitute a single visual block
+        
+        # Vertical gap check
+        v_gap = max(0, next_rect.y0 - current.y1)
+        h_overlap = max(0, min(current.x1, next_rect.x1) - max(current.x0, next_rect.x0))
+        
+        # If they are close vertically OR (overlap horizontally AND are somewhat close)
+        if v_gap < threshold or (v_gap < threshold * 3 and h_overlap > 0):
+             current = current | next_rect # Union
+        else:
+            merged.append(current)
+            current = next_rect
+            
+    merged.append(current)
+    return merged
+
+def get_solid_diagram_regions(page):
+    """Finds regions on the page that contain dense vector drawings (lines, curves)."""
+    paths = page.get_drawings()
+    if not paths: return []
+    
+    rects_to_merge = []
+    
+    for p in paths:
+        # Ignore huge full-page borders or tiny dots
+        r = p["rect"]
+        w, h = r.width, r.height
+        
+        # Filter noise
+        if w < 5 and h < 5: continue # Too small dot
+        if w > page.rect.width * 0.9 and h > page.rect.height * 0.9: continue # Page border
+        
+        rects_to_merge.append(r)
+        
+    # Heuristic: Merge close drawings
+    # Pass 1
+    merged = merge_rects(rects_to_merge, threshold=25)
+    
+    # Pass 2 (Aggressive merge)
+    final_regions = merge_rects(merged, threshold=50)
+    
+    # Filter for significant size
+    valid_regions = []
+    for r in final_regions:
+        # Must be at least 10% of page width or reasonably tall
+        if r.width > 50 and r.height > 50:
+            valid_regions.append(r)
+            
+    return valid_regions
+
 async def process_chapter_content(chapter_id: str):
     print(f"⚡ Processing Chapter Content: {chapter_id}")
     
@@ -510,43 +572,114 @@ async def process_chapter_content(chapter_id: str):
 
         next_chap = supabase.table("chapters").select("start_page_num").eq("book_id", book_id).gt("order_index", chapter.data['order_index']).order("order_index").limit(1).execute()
         
+        # --- NEW LOGIC: Calculate precise page range ---
+        start_idx = max(0, start_page - 1)
+        end_idx = len(doc) # Default to end
+
         if next_chap.data:
-            end_page = next_chap.data[0]['start_page_num']
-        else:
-            end_page = len(doc)
-
-        # Cap length for safety
-        if (end_page - start_page) > 25: end_page = start_page + 25
-        if end_page <= start_page: end_page = start_page + 1
-
-        print(f"📖 Reading pages {start_page} to {end_page}")
+            # If there is a next chapter, stop before it
+            end_idx = max(0, next_chap.data[0]['start_page_num'] - 1)
+        
+        # Determine total pages
+        total_pages_to_process = end_idx - start_idx
+        print(f"📖 Processing Ch {chapter.data['order_index']}: Pages {start_idx+1} to {end_idx} (Total: {total_pages_to_process})")
+        
+        processed_pages_count = 0
 
         supabase.table("paragraphs").delete().eq("chapter_id", chapter_id).execute()
 
-        global_order_index = 1
-        current_section = chapter.data['title'] # Default context
+        global_order_index = 1 # Re-added this line as it was missing from the provided snippet but is used later.
+        current_context = ""
+        current_section = chapter.data['title'] 
         paragraphs_to_insert = []
 
-        start_idx = start_page - 1
-        end_idx = end_page - 1
-        if end_idx > len(doc): end_idx = len(doc)
-
         for page_num in range(start_idx, end_idx):
+            # --- PROGRESS UPDATE ---
+            processed_pages_count += 1
+            if total_pages_to_process > 0:
+                percent = int((processed_pages_count / total_pages_to_process) * 100)
+                # Update DB every 3 pages or if it's the last one
+                if processed_pages_count % 3 == 0 or processed_pages_count == total_pages_to_process:
+                     try:
+                         supabase.table("chapters").update({"status": f"processing_{percent}"}).eq("id", chapter_id).execute()
+                         print(f"⏳ Progress: {percent}%")
+                     except Exception as e:
+                         print(f"⚠️ Progress Update Failed (Non-Critical): {e}")
+
             page = doc[page_num]
             page_rect = page.rect
             blocks = page.get_text("dict")["blocks"]
+
+            # --- A. DETECT VECTOR DIAGRAMS ---
+            diagram_rects = get_solid_diagram_regions(page)
+            ignore_rects = [] # Areas where we have extracted a diagram, so ignore text here
             
+            for d_rect in diagram_rects:
+                # Expand slightly to catch labels just outside
+                d_rect_expanded = fitz.Rect(d_rect.x0 - 5, d_rect.y0 - 5, d_rect.x1 + 5, d_rect.y1 + 5)
+                
+                try:
+                    # Render the Diagram Region
+                    mat = fitz.Matrix(2.0, 2.0)
+                    pix = page.get_pixmap(matrix=mat, clip=d_rect_expanded)
+                    if pix.alpha: pix = fitz.Pixmap(pix, 0)
+
+                    filename = f"diagrams/{book_id}/{chapter_id}_{global_order_index}.png"
+                    
+                    # Upload
+                    supabase.storage.from_("book-assets").upload(
+                        path=filename, file=pix.tobytes("png"),
+                        file_options={"content-type": "image/png", "upsert": "true"}
+                    )
+                    public_url = supabase.storage.from_("book-assets").get_public_url(filename)
+                    
+                    paragraphs_to_insert.append({
+                        "chapter_id": chapter_id, 
+                        "content": public_url, 
+                        "type": "image", # Treat as image
+                        "order_index": global_order_index, 
+                        "section_title": current_section,
+                        "is_completed": False
+                    })
+                    global_order_index += 1
+                    
+                    ignore_rects.append(d_rect_expanded)
+                    print(f"   🎨 Extracted Diagram at {d_rect}")
+                    
+                except Exception as e:
+                    print(f"   ⚠️ Diagram Extraction Failed: {e}")
+            
+            # --- B. PROCESS STANDARD BLOCKS ---
             for block in blocks:
-                # --- IMAGES ---
+                block_bbox = fitz.Rect(block["bbox"])
+                
+                # CHECK CONFLICT: Is this block inside a diagram we already extracted?
+                # If area overlap is significant (>50%), skip it (it's likely part of the diagram text)
+                is_duplicate = False
+                for ir in ignore_rects:
+                    intersect = block_bbox & ir # Intersection rect
+                    if not intersect.is_empty:
+                        overlap_area = intersect.width * intersect.height
+                        block_area = block_bbox.width * block_bbox.height
+                        # If more than 40% of the block is covered by the diagram, kill it
+                        if block_area > 0 and (overlap_area / block_area) > 0.4:
+                            is_duplicate = True
+                            break
+                
+                if is_duplicate:
+                    # print("   ⛔ Skipping text block (inside diagram)")
+                    continue
+
+                # --- IMAGES (Raster) ---
                 if block["type"] == 1: 
                     bbox = fitz.Rect(block["bbox"])
                     if bbox.width < 150 or bbox.height < 150: continue
                     if (bbox.width * bbox.height) > (page_rect.width * page_rect.height * 0.9): continue
 
                     try:
-                        mat = fitz.Matrix(2.0, 2.0) # High quality for Vision
+                        mat = fitz.Matrix(2.0, 2.0) 
                         pix = page.get_pixmap(matrix=mat, clip=bbox)
-                        if pix.alpha: pix = fitz.Pixmap(pix, 0) # Remove alpha
+                        if pix.alpha: pix = fitz.Pixmap(pix, 0) 
 
                         filename = f"{book_id}/{chapter_id}_{global_order_index}.png"
                         supabase.storage.from_("book-assets").upload(
@@ -560,7 +693,7 @@ async def process_chapter_content(chapter_id: str):
                             "content": public_url, 
                             "type": "image",
                             "order_index": global_order_index, 
-                            "section_title": current_section, # SAVE CONTEXT
+                            "section_title": current_section, 
                             "is_completed": False
                         })
                         global_order_index += 1
@@ -570,24 +703,54 @@ async def process_chapter_content(chapter_id: str):
                 elif block["type"] == 0:
                     block_text = ""
                     is_header = False
+                    is_code_block = False
+                    
                     for line in block["lines"]:
+                        line_text = ""
                         for span in line["spans"]:
                             span_text = span["text"]
+                            font_name = span["font"].lower()
+                            
+                            # Check for Code Font
+                            if "mono" in font_name or "courier" in font_name or "consolas" in font_name:
+                                is_code_block = True
+                            
                             # Check if text might be reversed (common PDF issue)
-                            # If reversed text looks more like English, fix it
                             if len(span_text) > 3:
-                                # Check if reversing makes it more readable
                                 reversed_text = span_text[::-1]
-                                # Expanded heuristic
-                                common_words = ['the', 'and', 'is', 'are', 'of', 'in', 'to', 'for', 'that', 'with', 'from', 'have', 'this', 'what', 'separation', 'process', 'substance', 'change', 'describe'] 
+                                common_words = [
+                                    'the', 'and', 'is', 'are', 'of', 'in', 'to', 'for', 'that', 'with', 'from', 'have', 'this', 'what', 'separation', 'process', 'substance', 'change', 'describe',
+                                    'int', 'float', 'char', 'void', 'main', 'printf', 'scanf', 'include', 'return', 'if', 'else', 'while', 'for', 'switch', 'case', 'break', 'continue', 'struct', 'union', 'typedef', 'define', 'header', 'stdio'
+                                ] 
                                 original_matches = sum(1 for w in common_words if w in span_text.lower())
                                 reversed_matches = sum(1 for w in common_words if w in reversed_text.lower())
                                 
-                                # Stronger signal: If original has basically 0 matches and reversed has many
                                 if reversed_matches > original_matches:
                                     span_text = reversed_text
-                            block_text += span_text + " "
+                                    
+                            line_text += span_text + " "
                             if span["size"] > 14: is_header = True
+                        
+                        # Use newline for code, space for regular text (within a block)
+                        if is_code_block:
+                            block_text += line_text.strip() + "\n"
+                        else:
+                            # New MATH Detection for individual lines
+                            clean_line = line_text.strip()
+                            # Heuristic: Contains = AND some math operator OR typical tokens
+                            is_math_line = False
+                            if "=" in clean_line and len(clean_line) < 100:
+                                if any(op in clean_line for op in ["+", "*", "/", "^", "\\", "{", "}"]):
+                                    is_math_line = True
+                                elif re.search(r'\b(si|p|n|r|x|y|f\(x\))\b', clean_line): # Variable heuristics
+                                    is_math_line = True
+                            
+                            # If it looks like a formula, wrap it immediately for this line
+                            if is_math_line and not is_header:
+                                # Quote it as latex
+                                block_text += "$$ " + clean_line.replace("$$", "") + " $$\n"
+                            else:
+                                block_text += line_text
                     
                     clean_text = block_text.strip()
                     if not clean_text or len(clean_text) < 3: continue
@@ -595,30 +758,41 @@ async def process_chapter_content(chapter_id: str):
                     if is_header: 
                         current_section = clean_text[:60] # Update Context
                     
-                    # Merge logic: Fix "One-Liners"
-                    # If this block is text (not header) and previous block was text (not header)
-                    # AND previous block didn't end with a strong stop (.!?) OR this one is short
+                    # Wrap Code Blocks
+                    if is_code_block and not is_header:
+                        # Clean up any potential double wrapping if logic expands
+                        clean_text = f"```c\n{clean_text}\n```"
+
+                    # Merge logic
                     if not is_header and paragraphs_to_insert:
                         last_para = paragraphs_to_insert[-1]
                         
-                        # Merge if:
-                        # 1. Last para is text
-                        # 2. This text is short (<300 chars) OR Last para appears incomplete (no period)
-                        # 3. Last para isn't HUGE (>1500 chars)
                         should_merge = False
                         
-                        if last_para["type"] == "image": should_merge = False
-                        elif last_para["section_title"] != current_section: should_merge = False # Don't merge across sections
-                        elif len(clean_text) < 300: should_merge = True # Aggressively merge broken lines
-                        elif not last_para["content"].strip().endswith((".", "!", "?", ":")): should_merge = True # Merge if sentence continues
+                        # --- MERGE CODE BLOCKS ---
+                        if is_code_block and last_para["content"].startswith("```c"):
+                             # Merge two code blocks
+                            last_para["content"] = last_para["content"].replace("\n```", "") + "\n" + clean_text.replace("```c\n", "").replace("\n```", "") + "\n```"
+                            continue # Merged
                         
-                        if should_merge and len(last_para["content"]) < 2000:
-                             last_para["content"] += " " + clean_text
-                             continue # Skip adding new paragraph, we merged it
-
+                        # --- MERGE TEXT BLOCKS ---
+                        elif not is_code_block and not last_para["content"].startswith("```c"):
+                            # Don't merge distinct Math blocks into text blindly? 
+                            # Actually it's fine, Markdown renders matched $$ blocks inline or block even if inside a paragraph.
+                            # But let's separate them if it's a BIG math block.
+                            
+                            if last_para["type"] == "image": should_merge = False
+                            elif last_para["section_title"] != current_section: should_merge = False 
+                            # If new text is purely math ($$ ... $$), maybe keep it separate?
+                            elif clean_text.startswith("$$") and clean_text.endswith("$$"): should_merge = False
+                            
+                            elif len(clean_text) < 300: should_merge = True 
+                            elif not last_para["content"].strip().endswith((".", "!", "?", ":")): should_merge = True 
+                            
+                            if should_merge and len(last_para["content"]) < 2000:
+                                last_para["content"] += " " + clean_text
+                                continue 
                     
-                    # We store as 'text' or 'header' to satisfy DB Constraints
-                    # We will detect 'example' patterns later in Python
                     type_label = "header" if is_header else "text"
 
                     paragraphs_to_insert.append({
@@ -626,7 +800,7 @@ async def process_chapter_content(chapter_id: str):
                         "content": clean_text, 
                         "type": type_label, 
                         "order_index": global_order_index, 
-                        "section_title": current_section, # SAVE CONTEXT
+                        "section_title": current_section, 
                         "is_completed": False
                     })
                     global_order_index += 1

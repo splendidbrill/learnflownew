@@ -31,8 +31,8 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
   const [analogyTopic, setAnalogyTopic] = useState('');
   const [file, setFile] = useState<File | null>(null);
   
-  // This was missing before:
   const [isLoading, setIsLoading] = useState(false); 
+  const [progress, setProgress] = useState(0); // <--- NEW: Upload Progress
 
   useEffect(() => {
     if (isOpen && initialData) {
@@ -47,8 +47,79 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
       setDescription('');
       setAnalogyTopic('');
       setFile(null);
+      setProgress(0);
     }
   }, [isOpen, initialData]);
+
+  // --- CUSTOM UPLOAD WITH PROGRESS ---
+  const uploadFileWithProgress = async (file: File, path: string): Promise<void> => {
+    return new Promise(async (resolve, reject) => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) throw new Error("No session");
+
+        const projectId = process.env.NEXT_PUBLIC_SUPABASE_URL?.split('//')[1].split('.')[0];
+        // Use standard Supabase Storage API Endpoint
+        const url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/books/${path}`;
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', url); // Storage usually uses POST for new files
+
+        // Headers
+        xhr.setRequestHeader('Authorization', `Bearer ${session.access_token}`);
+        xhr.setRequestHeader('x-upsert', 'true'); // Allow overwriting
+
+        // Progress Event
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const percentComplete = Math.round((event.loaded / event.total) * 100);
+            setProgress(percentComplete);
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve();
+          } else {
+            reject(new Error(`Upload failed: ${xhr.statusText}`));
+          }
+        };
+
+        xhr.onerror = () => reject(new Error("Network Error"));
+        
+        // Send actual form data via binary body
+        const formData = new FormData();
+        formData.append('', file); 
+        // Note: For Supabase raw binary upload is often simpler if supported, 
+        // but 'multipart/form-data' is standard. 
+        // Actually, Supabase Storage API expects RAW BINARY body for this specific endpoint structure if simple.
+        // Let's rely on standard FormData behavior which might add boundaries.
+        // BETTER APPROACH:
+        // Use the native supabase-js client but 'patch' it? No.
+        // Let's use the XHR with FormData exactly how Supabase expects.
+        
+        // Supabase expects FormData with 'cacheControl', 'upsert' etc fields, AND the file.
+        // Key must be valid.
+        
+        // SIMPLIFICATION:
+        // Just send the file as the body and set Content-Type to the file type.
+        // This is effectively a TUS or S3 direct upload style.
+        // But Supabase storage-api (PostgREST style) handles FormData.
+        
+        // Let's try the safest "Raw Binary" approach which works well with /object/ routes
+        // provided the headers are right.
+        
+        // Actually, a simpler way for REACT code:
+        // Just send `file` as the body. 
+        // Content-Type should be the file's type.
+        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+        xhr.send(file);
+        
+      } catch (err) {
+        reject(err);
+      }
+    });
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,7 +128,9 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
       return;
     }
 
-    setIsLoading(true); // Now this will work
+    setIsLoading(true);
+    setProgress(0); // Reset
+
     try {
       let fileUrl = initialData?.fileUrl;
 
@@ -66,12 +139,10 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
         const fileExt = file.name.split('.').pop();
         const fileName = `${user.id}/${Math.random()}.${fileExt}`;
         
-        const { error: uploadError } = await supabase.storage
-          .from('books')
-          .upload(fileName, file);
-
-        if (uploadError) throw uploadError;
-
+        // --- CUSTOM UPLOAD ---
+        await uploadFileWithProgress(file, fileName);
+        
+        // Get Public URL
         const { data: urlData } = supabase.storage
           .from('books')
           .getPublicUrl(fileName);
@@ -129,6 +200,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
       alert(`Failed to save book: ${error.message}`);
     } finally {
       setIsLoading(false);
+      setProgress(0);
     }
   };
 
@@ -157,7 +229,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
         <form onSubmit={handleSubmit} className="p-6 space-y-6 max-h-[80vh] overflow-y-auto">
           <div className="space-y-4">
             {/* File Upload */}
-            <div className="border-2 border-dashed border-purple-500/30 rounded-xl p-6 text-center hover:bg-purple-500/10 transition-colors">
+            <div className={`border-2 border-dashed ${file ? 'border-purple-500 bg-purple-500/20' : 'border-purple-500/30'} rounded-xl p-6 text-center hover:bg-purple-500/10 transition-colors`}>
               <input 
                 type="file" 
                 id="book-file" 
@@ -232,32 +304,57 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
             </div>
           </div>
 
-          <div className="flex justify-end gap-3 pt-4 border-t border-white/10">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={isLoading}
-              className="px-6 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-white/5 transition-colors font-medium"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="px-6 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium shadow-lg shadow-purple-900/20 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isLoading ? (
-                <>
-                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  Saving...
-                </>
-              ) : (
-                <>
-                  <Book className="w-4 h-4" />
-                  {initialData ? 'Update Book' : 'Add Book'}
-                </>
-              )}
-            </button>
+          <div className="flex flex-col gap-3 pt-4 border-t border-white/10">
+            
+            {/* --- PROGRESS BAR --- */}
+            {isLoading && progress > 0 && progress < 100 && (
+              <div className="w-full space-y-2">
+                <div className="flex justify-between text-xs text-purple-300">
+                  <span>Uploading to Cloud Storage...</span>
+                  <span>{progress}%</span>
+                </div>
+                <div className="w-full h-2 bg-black/40 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-gradient-to-r from-purple-500 to-pink-500 transition-all duration-200 ease-out"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={isLoading}
+                className="px-6 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-white/5 transition-colors font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="px-6 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-medium shadow-lg shadow-purple-900/20 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isLoading ? (
+                  <>
+                     {progress >= 100 ? (
+                        <>
+                           <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                           <span>Finishing up...</span>
+                        </>
+                     ) : (
+                        <span>Uploading ({progress}%)</span>
+                     )}
+                  </>
+                ) : (
+                  <>
+                    <Book className="w-4 h-4" />
+                    {initialData ? 'Update Book' : 'Add Book'}
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </form>
       </div>

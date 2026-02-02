@@ -122,6 +122,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [bookStatus, setBookStatus] = useState<string>("pending");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [chapterGenProgress, setChapterGenProgress] = useState(0);
 
   // Chat State
   const [messages, setMessages] = useState<Message[]>([]);
@@ -620,6 +621,8 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   const handleGenerateChapterContent = async () => {
     if (!selectedChapter) return;
     setIsGenerating(true);
+    setChapterGenProgress(0); // Reset
+
     try {
       await fetch(`${API_URL}/api/generate_chapter`, {
         method: "POST",
@@ -627,8 +630,21 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
         body: JSON.stringify({ chapterId: selectedChapter.id }),
       });
 
-      // Poll
+      // Poll for Status & Progress
       const interval = setInterval(async () => {
+        // 1. Check Chapter Status (Progress)
+        const { data: chapData } = await supabase
+          .from("chapters")
+          .select("status")
+          .eq("id", selectedChapter.id)
+          .single();
+        
+        if (chapData?.status && chapData.status.startsWith("processing_")) {
+           const percent = parseInt(chapData.status.split("_")[1]);
+           if (!isNaN(percent)) setChapterGenProgress(percent);
+        }
+
+        // 2. Check if Paragraphs are done (Standard Check)
         const { data } = await supabase
           .from("paragraphs")
           .select("*")
@@ -636,11 +652,16 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
           .order("order_index", { ascending: true });
 
         if (data && data.length > 0) {
-          setParagraphs(data);
-          setIsGenerating(false);
-          clearInterval(interval);
+          // If we have paragraphs, we assume it's basically done or at least readable
+          // But ideally we wait for status to be 'completed' if we set that
+          if (chapData?.status === "completed" || data.length > 5) {
+              setParagraphs(data);
+              setIsGenerating(false);
+              setChapterGenProgress(0);
+              clearInterval(interval);
+          }
         }
-      }, 3000);
+      }, 1000); // Poll every 1s for smoother bar
     } catch (e: any) {
       alert("Error: " + e.message);
       setIsGenerating(false);
@@ -1256,19 +1277,30 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
         {groupedSections.length === 0 && (
           <div className="text-center py-20">
-            <button
-              onClick={handleGenerateChapterContent}
-              disabled={isGenerating}
-              className="px-8 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold flex items-center justify-center gap-2 mx-auto disabled:opacity-50"
-            >
-              {isGenerating ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" /> Generating...
-                </>
-              ) : (
-                "✨ Generate Chapter Content"
-              )}
-            </button>
+            {isGenerating ? (
+               <div className="w-full max-w-md mx-auto">
+                  <div className="flex justify-between text-xs uppercase font-bold text-purple-300 mb-2">
+                    <span>Generating Chapter Content...</span>
+                    <span>{chapterGenProgress}%</span>
+                  </div>
+                  <div className="w-full h-3 bg-white/10 rounded-full overflow-hidden">
+                    <div 
+                        className="h-full bg-gradient-to-r from-purple-500 to-blue-500 transition-all duration-300 ease-out"
+                        style={{ width: `${chapterGenProgress}%` }}
+                    ></div>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-4 animate-pulse">
+                     Reading pages, finding diagrams, and formatting code...
+                  </p>
+               </div>
+            ) : (
+                <button
+                onClick={handleGenerateChapterContent}
+                className="px-8 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold flex items-center justify-center gap-2 mx-auto disabled:opacity-50 transition-all hover:scale-105"
+                >
+                ✨ Generate Chapter Content
+                </button>
+            )}
           </div>
         )}
 
