@@ -2,22 +2,24 @@ import OpenAI from 'openai'; // Standard library
 import { createClient } from '@supabase/supabase-js';
 
 // 1. Setup OpenAI client pointing to OpenRouter
-const openai = new OpenAI({
-  baseURL: 'https://openrouter.ai/api/v1',
-  apiKey: process.env.OPENROUTER_API_KEY,
-  // This is required for some custom base URLs
-  defaultHeaders: {
-    'HTTP-Referer': 'http://localhost:3000', 
-    'X-Title': 'AI Tutor App',
-  },
-});
-
-// 2. Setup Supabase
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-const supabase = createClient(supabaseUrl, supabaseKey);
 
 export async function POST(req: Request) {
+  // 1. Setup OpenAI client inside handler (prevents build-time error)
+  const openai = new OpenAI({
+    baseURL: 'https://openrouter.ai/api/v1',
+    apiKey: process.env.OPENROUTER_API_KEY,
+    defaultHeaders: {
+      'HTTP-Referer': 'http://localhost:3000', 
+      'X-Title': 'AI Tutor App',
+    },
+  });
+
+  // 2. Setup Supabase inside handler
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+  const createClient = (await import('@supabase/supabase-js')).createClient;
+  const supabase = createClient(supabaseUrl, supabaseKey);
+
   try {
     const { messages, chapterId } = await req.json();
 
