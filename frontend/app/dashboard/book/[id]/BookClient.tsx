@@ -1400,9 +1400,38 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                         remarkPlugins={[remarkMath]}
                         rehypePlugins={[rehypeKatex]}
                         components={{
-                          p: ({ node, ...props }) => (
-                            <p className="mb-0" {...props} />
+                          p: ({ node, children }) => (
+                            <p className="mb-4 text-gray-300 leading-relaxed">{children}</p>
                           ),
+                          code(props: any) {
+                            const { node, inline, className, children, ...rest } = props;
+                            const match = /language-(\w+)/.exec(className || "");
+                            const isBlock = !inline;
+                            
+                            return isBlock ? (
+                              <div className="relative group my-6 bg-[#1E1E2E] rounded-xl border border-white/10 overflow-hidden shadow-xl max-w-full">
+                                 <div className="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                   <div className="flex gap-1.5">
+                                     <div className="w-3 h-3 rounded-full bg-red-500/20" />
+                                     <div className="w-3 h-3 rounded-full bg-yellow-500/20" />
+                                     <div className="w-3 h-3 rounded-full bg-green-500/20" />
+                                   </div>
+                                   <span className="text-xs font-mono font-medium text-gray-400 capitalize">
+                                      {match ? match[1] : 'text'}
+                                   </span>
+                                 </div>
+                                 <div className="p-4 overflow-x-auto w-full">
+                                    <code className={`${className} font-mono text-sm whitespace-pre-wrap break-words block text-gray-300`} {...rest}>
+                                      {children}
+                                    </code>
+                                 </div>
+                              </div>
+                            ) : (
+                              <code className="px-1.5 py-0.5 bg-purple-500/20 rounded text-purple-200 text-sm font-mono whitespace-pre-wrap break-words" {...rest}>
+                                {children}
+                              </code>
+                            );
+                          },
                         }}
                       >
                         {para.content}
