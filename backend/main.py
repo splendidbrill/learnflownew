@@ -821,10 +821,16 @@ async def process_chapter_content(chapter_id: str):
             for i in range(0, len(paragraphs_to_insert), chunk_size):
                 supabase.table("paragraphs").insert(paragraphs_to_insert[i:i+chunk_size]).execute()
 
-        print(f"✅ Generated Chapter: {chapter.data['title']}")
+        # Mark as Completed explicitly so frontend stops polling
+        supabase.table("chapters").update({"status": "completed"}).eq("id", chapter_id).execute()
+        print(f"✅ Generated Chapter: {chapter.data['title']} (Status: Completed)")
 
     except Exception as e:
         print(f"❌ Error generating chapter: {str(e)}")
+        # Optional: Mark as failed?
+        try:
+             supabase.table("chapters").update({"status": "failed"}).eq("id", chapter_id).execute()
+        except: pass
 class TTSRequest(BaseModel):
     text: str
     language: str = "english" # english, hindi, spanish, chinese
