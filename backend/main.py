@@ -711,12 +711,23 @@ async def process_chapter_content(chapter_id: str):
                             span_text = span["text"]
                             font_name = span["font"].lower()
                             
-                            # Check for Code Font
-                            if "mono" in font_name or "courier" in font_name or "consolas" in font_name:
+                            # DEBUG: Trace fonts to fix detection
+                            # if page_num == start_idx: print(f"   [Font Trace] {font_name}: {span_text[:20]}")
+
+                            # Check for Code Font (Heuristic 1: Font Name)
+                            if "mono" in font_name or "courier" in font_name or "consolas" in font_name or "typewriter" in font_name:
                                 is_code_block = True
                             
+                            # Check for Code Syntax (Heuristic 2: C-Style Endings)
+                            # If a line ends with ; or { or }, it's likely code. 
+                            if span_text.strip().endswith((";", "{", "}", "*/")):
+                                is_code_block = True
+
                             # Check if text might be reversed (common PDF issue)
-                            if len(span_text) > 3:
+                            # SKIP if it looks like a formula (has = or * or /)
+                            is_math_part = any(op in span_text for op in ["=", "*", "/", "+"])
+                            
+                            if len(span_text) > 3 and not is_math_part:
                                 reversed_text = span_text[::-1]
                                 common_words = [
                                     'the', 'and', 'is', 'are', 'of', 'in', 'to', 'for', 'that', 'with', 'from', 'have', 'this', 'what', 'separation', 'process', 'substance', 'change', 'describe',

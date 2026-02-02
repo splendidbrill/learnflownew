@@ -622,6 +622,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     if (!selectedChapter) return;
     setIsGenerating(true);
     setChapterGenProgress(0); // Reset
+    setParagraphs([]); // <--- Clear old data to prevent early exit
 
     try {
       await fetch(`${API_URL}/api/generate_chapter`, {
@@ -639,8 +640,11 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
           .eq("id", selectedChapter.id)
           .single();
         
+        console.log("📊 Frontend Polling Status:", chapData?.status); // DEBUG LOG
+
         if (chapData?.status && chapData.status.startsWith("processing_")) {
            const percent = parseInt(chapData.status.split("_")[1]);
+           console.log("   --> Parsed Percent:", percent); // DEBUG LOG
            if (!isNaN(percent)) setChapterGenProgress(percent);
         }
 
@@ -651,15 +655,14 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
           .eq("chapter_id", selectedChapter.id)
           .order("order_index", { ascending: true });
 
-        if (data && data.length > 0) {
-          // If we have paragraphs, we assume it's basically done or at least readable
-          // But ideally we wait for status to be 'completed' if we set that
-          if (chapData?.status === "completed" || data.length > 5) {
-              setParagraphs(data);
+        // Only stop if explicitly completed OR we have data and status is NOT processing
+        const isStillProcessing = chapData?.status?.startsWith("processing");
+        
+        if (chapData?.status === "completed" || (data && data.length > 5 && !isStillProcessing)) {
+              setParagraphs(data || []);
               setIsGenerating(false);
               setChapterGenProgress(0);
               clearInterval(interval);
-          }
         }
       }, 1000); // Poll every 1s for smoother bar
     } catch (e: any) {
