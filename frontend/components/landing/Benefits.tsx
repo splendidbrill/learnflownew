@@ -20,7 +20,7 @@ export default function Benefits(): JSX.Element {
   const stats: StatItem[] = [
     { icon: Target, value: "95%", label: "Better Understanding" },
     { icon: Flame, value: "3x", label: "Faster Learning" },
-    { icon: Users, value: "10k+", label: "Active Students" },
+    { icon: Users, value: "10+", label: "Active Students" },
     { icon: Trophy, value: "4.9/5", label: "Student Rating" }
   ];
 
@@ -28,19 +28,19 @@ export default function Benefits(): JSX.Element {
     {
       quote:
         "The analogies are brilliant! I finally understand organic chemistry concepts that confused me for months.",
-      author: "Sarah Chen",
+      author: "Akrist Raj",
       role: "Chemistry Student"
     },
     {
       quote:
         "Scheduling lessons at 9pm works perfectly with my routine. The AI remembers everything I've learned.",
-      author: "Marcus Johnson",
+      author: "Sayukta Karan",
       role: "Engineering Major"
     },
     {
       quote:
         "Being able to organize all my subjects and books in one place is a game-changer. Love this platform!",
-      author: "Emily Rodriguez",
+      author: "Aman Jaiswal",
       role: "Medical Student"
     }
   ];
