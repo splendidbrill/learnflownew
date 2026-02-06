@@ -145,6 +145,9 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   // NEW: Tracks which message is currently loaded in the audio player
   const [currentAudioMessageId, setCurrentAudioMessageId] = useState<string | null>(null); 
   
+  // NEW: Tracks which messages have received feedback
+  const [feedbackGiven, setFeedbackGiven] = useState<Record<string, 'got_it' | 'confused' | null>>({});
+  
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // --- INITIALIZATION ---
@@ -1002,6 +1005,46 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     }
   };
 
+  // --- MISCONCEPTION FEEDBACK HANDLER ---
+  const handleFeedback = async (messageId: string, messageContent: string, feedbackType: 'got_it' | 'confused') => {
+    const { data: { user: currentUser } } = await supabase.auth.getUser();
+    if (!currentUser?.id) return;
+
+    const concept = paragraphs.find(p => p.id === activeParagraphId)?.section_title || "General Concept";
+    
+    setFeedbackGiven(prev => ({ ...prev, [messageId]: feedbackType }));
+
+    try {
+      if (feedbackType === 'confused') {
+        await fetch(`${API_URL}/api/misconception/log`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: currentUser.id,
+            paragraph_id: activeParagraphId || "",
+            concept: concept,
+            failed_analogy: messageContent,
+            user_interest: book?.analogy_topic || "General",
+          }),
+        });
+        console.log("📊 Logged misconception");
+      } else {
+        await fetch(`${API_URL}/api/misconception/success`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            concept: concept,
+            user_interest: book?.analogy_topic || "General",
+            analogy_text: messageContent,
+          }),
+        });
+        console.log("✅ Logged successful analogy");
+      }
+    } catch (e) {
+      console.error("Feedback logging error:", e);
+    }
+  };
+
   const groupParagraphsBySection = (list: Paragraph[]) => {
     const sections: { title: string; paragraphs: Paragraph[] }[] = [];
     list.forEach((p) => {
@@ -1676,6 +1719,32 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                          </span>
                       )}
                     </div>
+                )}
+                
+                {/* 4. FEEDBACK BUTTONS (Misconception Tracking) */}
+                {m.role === 'assistant' && m.content && (
+                  <div className="mt-2 flex items-center gap-2 border-t border-white/5 pt-2">
+                    {feedbackGiven[m.id] ? (
+                      <span className={`text-xs ${feedbackGiven[m.id] === 'got_it' ? 'text-green-400' : 'text-yellow-400'}`}>
+                        {feedbackGiven[m.id] === 'got_it' ? '✓ Thanks for the feedback!' : '🔄 We\'ll improve this'}
+                      </span>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => handleFeedback(m.id, m.content, 'got_it')}
+                          className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-green-900/30 text-green-400 hover:bg-green-900/50 transition-colors"
+                        >
+                          ✓ Got it!
+                        </button>
+                        <button
+                          onClick={() => handleFeedback(m.id, m.content, 'confused')}
+                          className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-yellow-900/30 text-yellow-400 hover:bg-yellow-900/50 transition-colors"
+                        >
+                          🤔 I don't get it
+                        </button>
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
