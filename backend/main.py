@@ -21,6 +21,7 @@ from db import supabase
 from services.vision_service import analyze_diagram, describe_image
 from services.mermaid_service import generate_concept_diagram, personalize_image_explanation
 from routers import scheduler, stats, admin, subscription, rate_limits, payment, contact
+from services.agent_graph import generate_agentic_explanation
 
 # 1. Load Env
 env_path = Path(__file__).parent / '.env'
@@ -214,6 +215,49 @@ async def analyze_image_endpoint(req: ImageAnalysisRequest):
 
 # 💬 C. CHAT & PROGRESS
 # Replace the existing /chat endpoint in main.py
+
+# 🧠 D. AGENTIC EXPLANATION (Multi-Step Pipeline)
+class AgenticExplainRequest(BaseModel):
+    content: str
+    user_interest: str
+    context: str = ""
+    paragraph_id: str = ""
+
+@app.post("/api/explain-agentic")
+async def explain_agentic_endpoint(req: AgenticExplainRequest):
+    """
+    Multi-step agentic explanation using LangGraph pipeline.
+    
+    Pipeline:
+    1. Parser: Extract concepts
+    2. Personalizer: Map to interest domains
+    3. Strategist: Generate 3 candidates
+    4. Evaluator: Select best explanation
+    """
+    print(f"🧠 Agentic Explain | Interest: {req.user_interest} | Context: {req.context}")
+    
+    try:
+        result = await generate_agentic_explanation(
+            content=req.content,
+            user_interest=req.user_interest,
+            context=req.context
+        )
+        
+        # Optionally save to paragraph if ID provided
+        if req.paragraph_id and result.get("explanation"):
+            supabase.table("paragraphs").update({
+                "explanation": result["explanation"],
+                "analogy_topic": req.user_interest
+            }).eq("id", req.paragraph_id).execute()
+        
+        return {
+            "explanation": result["explanation"],
+            "concepts": result.get("concepts", []),
+            "reasoning": result.get("reasoning", "")
+        }
+    except Exception as e:
+        print(f"❌ Agentic explain error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest):
