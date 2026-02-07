@@ -20,7 +20,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from db import supabase 
 from services.vision_service import analyze_diagram, describe_image
 from services.mermaid_service import generate_concept_diagram, personalize_image_explanation
-from routers import scheduler, stats, admin, subscription, rate_limits, payment, contact, misconceptions
+from routers import scheduler, stats, admin, subscription, rate_limits, payment, contact, misconceptions, reviews, telegram_webhook
 from services.agent_graph import generate_agentic_explanation
 
 # 1. Load Env
@@ -46,6 +46,8 @@ app.include_router(rate_limits.router, prefix="/api")
 app.include_router(payment.router, prefix="/api")
 app.include_router(contact.router, prefix="/api")
 app.include_router(misconceptions.router, prefix="/api")
+app.include_router(reviews.router, prefix="/api")
+app.include_router(telegram_webhook.router, prefix="/api")
 
 # --- 3. SETUP TEXT BRAIN (DeepSeek via Azure) ---
 text_base_url = os.getenv("AZURE_TEXT_BASE_URL")
@@ -563,7 +565,9 @@ CRITICAL:
         print(f"✅ Scan Complete.")
 
     except Exception as e:
+        import traceback
         print(f"❌ Error: {str(e)}")
+        print(f"❌ Traceback: {traceback.format_exc()}")
         supabase.table("course_books").update({"status": "failed"}).eq("id", book_id).execute()
 
 # --- HELPER: Vector Diagram Detection ---

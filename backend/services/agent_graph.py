@@ -24,6 +24,7 @@ class AgentState(TypedDict):
     content: str
     user_interest: str
     context: str
+    failed_analogies: List[str]  # Analogies to avoid
     
     # Parser output
     concepts: List[str]
@@ -134,13 +135,19 @@ async def strategist_node(state: AgentState) -> AgentState:
     concepts_str = ", ".join(state["concepts"])
     domains_str = ", ".join(state["analogy_domains"])
     
+    # Build avoid list
+    avoid_warning = ""
+    if state.get("failed_analogies"):
+        avoid_list = "\n".join([f"- {a}" for a in state["failed_analogies"]])
+        avoid_warning = f"\n\n⚠️ AVOID THESE ANALOGIES (they previously failed):\n{avoid_list}\n"
+    
     prompt = f"""
     You are an expert tutor. Generate 3 DIFFERENT explanations for this concept.
     
     CONCEPTS TO EXPLAIN: {concepts_str}
     ORIGINAL CONTENT: {state['content'][:800]}
     USER'S INTEREST: {state['user_interest']}
-    ANALOGY DOMAINS TO USE: {domains_str}
+    ANALOGY DOMAINS TO USE: {domains_str}{avoid_warning}
     
     Generate 3 explanations with DIFFERENT approaches:
     1. A direct analogy using {state['user_interest']}
@@ -256,9 +263,20 @@ def build_explanation_graph() -> StateGraph:
 explanation_graph = build_explanation_graph()
 
 
-async def generate_agentic_explanation(content: str, user_interest: str, context: str = "") -> dict:
+async def generate_agentic_explanation(
+    content: str, 
+    user_interest: str, 
+    context: str = "",
+    failed_analogies: List[str] = None
+) -> dict:
     """
     Main function to generate an explanation using the agentic pipeline.
+    
+    Args:
+        content: The educational content to explain
+        user_interest: User's interest for personalization
+        context: Additional context
+        failed_analogies: List of analogies to avoid (from misconception logs)
     
     Returns:
         {"explanation": str, "concepts": list, "reasoning": str}
@@ -271,6 +289,7 @@ async def generate_agentic_explanation(content: str, user_interest: str, context
         "content": content,
         "user_interest": user_interest,
         "context": context,
+        "failed_analogies": failed_analogies or [],
         "concepts": [],
         "dependencies": [],
         "analogy_domains": [],

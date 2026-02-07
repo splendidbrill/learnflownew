@@ -162,39 +162,22 @@ async def create_schedule(req: CreateScheduleRequest):
         utc_dt = datetime(now.year, now.month, now.day, req.hour, req.minute)
 
     # 2. Calculate Triggers (based on UTC time)
-    # Schedule 30 mins before
-    dt_30 = utc_dt - timedelta(minutes=30)
-    cron_30 = f"{dt_30.minute} {dt_30.hour} * * *"
-    
-    # Schedule 5 mins before
-    dt_5 = utc_dt - timedelta(minutes=5)
-    cron_5 = f"{dt_5.minute} {dt_5.hour} * * *"
+    # Schedule 3 mins before (single reminder)
+    dt_3 = utc_dt - timedelta(minutes=3)
+    cron_3 = f"{dt_3.minute} {dt_3.hour} * * *"
 
-    print(f"📅 Scheduling for User {req.userId}: 30m({cron_30}) 5m({cron_5})")
+    print(f"📅 Scheduling for User {req.userId}: 3m({cron_3})")
 
     try:
         # 3. Register with Upstash
         # We pass the 'channels' list into the body so the trigger knows who to message
         
-        # A. 30 Minute Trigger
-        res_30 = qstash_client.schedule.create(
-            cron=cron_30,
+        # 3 Minute Trigger
+        res_3 = qstash_client.schedule.create(
+            cron=cron_3,
             destination=f"{os.getenv('APP_URL')}/api/cron/trigger",
-            body=json.dumps({  # <--- 2. WRAP IN JSON.DUMPS
-                "type": "30min", 
-                "userId": req.userId, 
-                "bookId": req.bookId, 
-                "chatId": target_chat_id, 
-                "channels": req.channels
-            }),
-        )
-        
-        # B. 5 Minute Trigger
-        res_5 = qstash_client.schedule.create(
-            cron=cron_5,
-            destination=f"{os.getenv('APP_URL')}/api/cron/trigger",
-            body=json.dumps({  # <--- 3. WRAP IN JSON.DUMPS
-                "type": "5min", 
+            body=json.dumps({
+                "type": "3min", 
                 "userId": req.userId, 
                 "bookId": req.bookId, 
                 "chatId": target_chat_id, 
@@ -208,11 +191,10 @@ async def create_schedule(req: CreateScheduleRequest):
             "book_id": req.bookId,
             "telegram_chat_id": target_chat_id,
             "cron_schedule": f"{req.hour}:{req.minute} {req.timezone}",
-            "qstash_schedule_id_30": res_30,
-            "qstash_schedule_id_5": res_5
+            "qstash_schedule_id_3": res_3
         }).execute()
 
-        return {"status": "scheduled", "ids": [res_30, res_5]}
+        return {"status": "scheduled", "ids": [res_3]}
     
     except Exception as e:
         print(f"Error scheduling: {e}")

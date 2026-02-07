@@ -884,6 +884,70 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     }
   };
 
+  const handleSkipParagraph = async () => {
+    if (!activeParagraphId || !user?.id) return;
+
+    // Find current and next paragraphs
+    const currentIndex = paragraphs.findIndex((p) => p.id === activeParagraphId);
+    const nextPara = paragraphs[currentIndex + 1]; // n+1 (to skip)
+    const targetPara = paragraphs[currentIndex + 2]; // n+2 (to go to)
+
+    // Mark current as completed
+    setParagraphs((prev) =>
+      prev.map((p) =>
+        p.id === activeParagraphId ? { ...p, is_completed: true } : p
+      )
+    );
+    await saveProgressToDb(activeParagraphId);
+
+    // Mark next paragraph (n+1) as skipped/completed
+    if (nextPara) {
+      setParagraphs((prev) =>
+        prev.map((p) =>
+          p.id === nextPara.id ? { ...p, is_completed: true } : p
+        )
+      );
+      await saveProgressToDb(nextPara.id);
+    }
+
+    // Go to n+2
+    if (targetPara) {
+      setActiveParagraphId(targetPara.id);
+      setTimeout(() => {
+        const el = document.getElementById(`para-${targetPara.id}`);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 100);
+      triggerExplanation(targetPara.id);
+    } else {
+      setActiveParagraphId(null);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          role: "assistant",
+          content: "🎉 Chapter completed!"
+        }
+      ]);
+    }
+  };
+
+  const handlePreviousParagraph = () => {
+    if (!activeParagraphId) return;
+
+    const currentIndex = paragraphs.findIndex((p) => p.id === activeParagraphId);
+    if (currentIndex > 0) {
+      const prevPara = paragraphs[currentIndex - 1];
+      setActiveParagraphId(prevPara.id);
+      
+      setTimeout(() => {
+        const el = document.getElementById(`para-${prevPara.id}`);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 100);
+      
+      triggerExplanation(prevPara.id);
+    }
+  };
+
   // Helper to keep code clean
   // Replace your existing saveProgressToDb with this robust version
   const saveProgressToDb = async (blockId: string) => {
@@ -1027,7 +1091,22 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
             user_interest: book?.analogy_topic || "General",
           }),
         });
-        console.log("📊 Logged misconception");
+        
+        // Add to review queue
+        await fetch(`${API_URL}/api/reviews/add`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: currentUser.id,
+            concept: concept,
+            paragraph_id: activeParagraphId || "",
+            book_id: bookId,
+            chapter_id: null,
+            failed_explanation: messageContent
+          })
+        });
+        
+        console.log("📊 Logged misconception + added to review queue");
       } else {
         await fetch(`${API_URL}/api/misconception/success`, {
           method: "POST",
@@ -1771,10 +1850,16 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                 </p>
                 <button
                   onClick={handleNextParagraph}
-                  className="ml-auto bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-2 transition-all"
+                  className="ml-auto mb-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-2 transition-all"
                 >
                   Next Paragraph <ChevronRight className="w-3 h-3" />
                 </button>
+                <button className="ml-auto mb-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-2 transition-all" onClick={handlePreviousParagraph}>
+  ← Previous
+</button>
+<button className="ml-auto bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-2 transition-all" onClick={handleSkipParagraph}>
+  Skip the next paragraph →
+</button>
               </div>
             </div>
           )}
