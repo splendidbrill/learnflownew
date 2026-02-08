@@ -41,8 +41,8 @@ async def generate_test_questions(
     # Get user's weak concepts from misconception logs
     weak_concepts = await get_user_weak_concepts(user_id, book_id)
     
-    # Get all concepts from book paragraphs
-    all_concepts = await extract_concepts_from_book(book_id, chapter_id)
+    # Get all concepts from book paragraphs (only completed ones)
+    all_concepts = await extract_concepts_from_book(book_id, user_id, chapter_id)
     
     if not all_concepts:
         # Fallback: generate generic questions
@@ -186,16 +186,32 @@ async def get_user_weak_concepts(user_id: str, book_id: str) -> List[str]:
     return list(set(weak))  # Remove duplicates
 
 
-async def extract_concepts_from_book(book_id: str, chapter_id: Optional[str] = None) -> List[str]:
+async def extract_concepts_from_book(book_id: str, user_id: str, chapter_id: Optional[str] = None) -> List[str]:
     """
-    Extract concepts from book paragraphs
+    Extract concepts from COMPLETED book paragraphs only
     """
     try:
-        # If specific chapter requested, use it directly
+        # First, get all completed paragraph IDs for this user in this book
+        progress_result = supabase.table("user_progress") \
+            .select("current_block_id") \
+            .eq("user_id", user_id) \
+            .eq("book_id", book_id) \
+            .eq("is_completed", True) \
+            .execute()
+        
+        if not progress_result.data:
+            print(f"⚠️ No completed paragraphs found for user {user_id} in book {book_id}")
+            return []
+        
+        completed_paragraph_ids = [p["current_block_id"] for p in progress_result.data]
+        print(f"✅ Found {len(completed_paragraph_ids)} completed paragraphs")
+        
+        # If specific chapter requested, get its paragraphs and filter to completed ones
         if chapter_id:
             query = supabase.table("paragraphs") \
                 .select("content, section_title") \
                 .eq("chapter_id", chapter_id) \
+                .in_("id", completed_paragraph_ids) \
                 .limit(20).execute()
         else:
             # Get all chapters for this book first
@@ -207,11 +223,12 @@ async def extract_concepts_from_book(book_id: str, chapter_id: Optional[str] = N
             if not chapters_result.data:
                 return []
             
-            # Get paragraphs from all chapters
+            # Get paragraphs from all chapters, filtered to completed ones only
             chapter_ids = [c["id"] for c in chapters_result.data]
             query = supabase.table("paragraphs") \
                 .select("content, section_title") \
                 .in_("chapter_id", chapter_ids) \
+                .in_("id", completed_paragraph_ids) \
                 .limit(20).execute()
         
         if not query.data:

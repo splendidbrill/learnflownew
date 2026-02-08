@@ -1121,6 +1121,11 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
           }),
         });
         console.log("✅ Logged successful analogy");
+
+        // --- NEW: MARK PARAGRAPH AS COMPLETED ---
+        if (activeParagraphId) {
+            handleMarkCompleted(activeParagraphId);
+        }
       }
     } catch (e) {
       console.error("Feedback logging error:", e);
@@ -1753,6 +1758,12 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                   {completedParagraphsCount < 5 && (
                     <span className="text-xs opacity-70">({completedParagraphsCount}/5)</span>
                   )}
+                </button>
+                <button
+                  onClick={() => router.push("/dashboard/tests/history")}
+                  className="w-full p-3 bg-blue-600/20 border border-blue-500/50 hover:bg-blue-600/30 rounded-xl flex items-center justify-center gap-2 text-sm text-blue-300 font-bold transition"
+                >
+                  <Trophy className="w-4 h-4" /> View Test History
                 </button>
                 <button
                   onClick={() => router.push("/dashboard")}

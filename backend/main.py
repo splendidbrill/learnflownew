@@ -546,12 +546,28 @@ CRITICAL:
                                        'table of', 'index', 'appendix', 'glossary', 'bibliography']
                     
                     filtered_chapters = []
-                    for chap in detected_chapters:
-                        title = chap.get("title", "").lower()
-                        if not any(kw in title for kw in exclude_keywords):
-                            filtered_chapters.append(chap)
+                    seen_titles = set()  # For deduplication
                     
-                    print(f"🎯 AI detected {len(detected_chapters)} entries, kept {len(filtered_chapters)} chapters!")
+                    for chap in detected_chapters:
+                        title = chap.get("title", "").lower().strip()
+                        
+                        # Skip excluded keywords
+                        if any(kw in title for kw in exclude_keywords):
+                            continue
+                        
+                        # Normalize title for duplicate detection
+                        # Remove "Chapter X:" prefix to catch "Chapter 1" and "CHAPTER 1: INTRO" as duplicates
+                        normalized = re.sub(r'chapter\s*\d+:?\s*', '', title).strip()
+                        
+                        # Skip exact duplicates
+                        if normalized in seen_titles:
+                            print(f"   ⚠️ Skipping duplicate chapter: {chap['title']}")
+                            continue
+                        
+                        seen_titles.add(normalized)
+                        filtered_chapters.append(chap)
+                    
+                    print(f"🎯 AI detected {len(detected_chapters)} entries, kept {len(filtered_chapters)} unique chapters!")
                     
                     for chap in filtered_chapters:
                         chapters_to_save.append({
@@ -673,12 +689,33 @@ async def process_chapter_content(chapter_id: str):
         next_chap = supabase.table("chapters").select("start_page_num").eq("book_id", book_id).gt("order_index", chapter.data['order_index']).order("order_index").limit(1).execute()
         
         # --- NEW LOGIC: Calculate precise page range ---
-        start_idx = max(0, start_page - 1)
-        end_idx = len(doc) # Default to end
+        start_idx = max(0, start_page - 1)  # Convert 1-indexed to 0-indexed
+        
+        # --- ROBUSTNESS FIX: Handle logical vs physical page number mismatch ---
+        # If start_idx exceeds document length, we likely have logical page numbers (e.g. 218)
+        # mapped to a short PDF (e.g. 5 pages).
+        if start_idx >= len(doc):
+            print(f"⚠️ Page {start_idx} out of bounds (Doc len: {len(doc)}). Assuming logical page numbering mismatch.")
+            # If it's the first chapter or very close to start, assume it starts at the beginning
+            if chapter.data.get('order_index') == 1:
+                start_idx = 0
+                print(f"   -> Resetting Chapter 1 start to page 0")
+            else:
+                 # Clamp to end
+                 start_idx = max(0, len(doc) - 1)
+                 print(f"   -> Clamping start to page {start_idx}")
+
+        end_idx = len(doc)  # Default to end of document
 
         if next_chap.data:
-            # If there is a next chapter, stop before it
-            end_idx = max(0, next_chap.data[0]['start_page_num'] - 1)
+            # If there is a next chapter, stop BEFORE it starts
+            # next_chap['start_page_num'] is 1-indexed, convert to 0-indexed
+            next_chapter_start = next_chap.data[0]['start_page_num'] - 1
+            end_idx = next_chapter_start
+        
+        # Ensure end_idx is never less than start_idx
+        if end_idx <= start_idx:
+            end_idx = start_idx + 1  # Process at least 1 page
         
         # Determine total pages
         total_pages_to_process = end_idx - start_idx
@@ -875,6 +912,11 @@ async def process_chapter_content(chapter_id: str):
                                 if reversed_matches > original_matches:
                                     span_text = reversed_text
                                     
+                            
+                            # Define these variables in the outer scope so they're available below
+                            clean_line = line_text.strip()
+                            is_math_line = False
+
                             line_text += span_text + " "
                             if span["size"] > 14: is_header = True
                         
@@ -883,9 +925,7 @@ async def process_chapter_content(chapter_id: str):
                             block_text += line_text.strip() + "\n"
                         else:
                             # New MATH Detection for individual lines
-                            clean_line = line_text.strip()
                             # Heuristic: Contains = AND some math operator OR typical tokens
-                            is_math_line = False
                             if "=" in clean_line and len(clean_line) < 100:
                                 if any(op in clean_line for op in ["+", "*", "/", "^", "\\", "{", "}"]):
                                     is_math_line = True
@@ -897,7 +937,12 @@ async def process_chapter_content(chapter_id: str):
                                 # Quote it as latex
                                 block_text += "$$ " + clean_line.replace("$$", "") + " $$\n"
                             else:
-                                block_text += line_text
+                                # Use newline instead of space to preserve formatting
+                                # But only if the line is long enough (avoid breaking mid-sentence too aggressively)
+                                if len(line_text) > 80 or line_text.strip().endswith((".", ":", "!", "?", ";")):
+                                     block_text += line_text + "\n"
+                                else:
+                                     block_text += line_text + " "
                     
                     clean_text = block_text.strip()
                     if not clean_text or len(clean_text) < 3: continue
