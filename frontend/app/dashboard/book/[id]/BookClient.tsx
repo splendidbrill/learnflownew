@@ -1684,12 +1684,20 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
             </button>
           ))}
         </div>
-        <button
-          onClick={() => router.push("/dashboard")}
-          className="m-4 p-3 bg-white/5 hover:bg-white/10 rounded-xl flex items-center justify-center gap-2 text-sm"
-        >
-          <LogOut className="w-4 h-4" /> Back to Dashboard
-        </button>
+        <div className="p-4 space-y-2">
+          <button
+            onClick={() => router.push(`/dashboard/book/${bookId}/test`)}
+            className="w-full p-3 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 rounded-xl flex items-center justify-center gap-2 text-sm font-bold transition"
+          >
+            <Trophy className="w-4 h-4" /> Take Test
+          </button>
+          <button
+            onClick={() => router.push("/dashboard")}
+            className="w-full p-3 bg-white/5 hover:bg-white/10 rounded-xl flex items-center justify-center gap-2 text-sm"
+          >
+            <LogOut className="w-4 h-4" /> Back to Dashboard
+          </button>
+        </div>
       </div>
 
       {/* CENTER AREA (DASHBOARD OR READER) */}

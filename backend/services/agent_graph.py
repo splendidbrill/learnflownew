@@ -25,6 +25,7 @@ class AgentState(TypedDict):
     user_interest: str
     context: str
     failed_analogies: List[str]  # Analogies to avoid
+    difficulty_level: str  # 'easy', 'medium', or 'hard'
     
     # Parser output
     concepts: List[str]
@@ -141,8 +142,17 @@ async def strategist_node(state: AgentState) -> AgentState:
         avoid_list = "\n".join([f"- {a}" for a in state["failed_analogies"]])
         avoid_warning = f"\n\n⚠️ AVOID THESE ANALOGIES (they previously failed):\n{avoid_list}\n"
     
+    # Get difficulty modifier
+    from services.adaptive_difficulty import get_explanation_prompt_modifier
+    difficulty_modifier = get_explanation_prompt_modifier(
+        state.get("difficulty_level", "medium"),
+        state["user_interest"]
+    )
+    
     prompt = f"""
     You are an expert tutor. Generate 3 DIFFERENT explanations for this concept.
+    
+    {difficulty_modifier}
     
     CONCEPTS TO EXPLAIN: {concepts_str}
     ORIGINAL CONTENT: {state['content'][:800]}
@@ -267,7 +277,8 @@ async def generate_agentic_explanation(
     content: str, 
     user_interest: str, 
     context: str = "",
-    failed_analogies: List[str] = None
+    failed_analogies: List[str] = None,
+    difficulty_level: str = "medium"
 ) -> dict:
     """
     Main function to generate an explanation using the agentic pipeline.
@@ -275,6 +286,7 @@ async def generate_agentic_explanation(
     Args:
         content: The educational content to explain
         user_interest: User's interest for personalization
+        difficulty_level: 'easy', 'medium', or 'hard'
         context: Additional context
         failed_analogies: List of analogies to avoid (from misconception logs)
     
@@ -290,6 +302,7 @@ async def generate_agentic_explanation(
         "user_interest": user_interest,
         "context": context,
         "failed_analogies": failed_analogies or [],
+        "difficulty_level": difficulty_level,
         "concepts": [],
         "dependencies": [],
         "analogy_domains": [],
