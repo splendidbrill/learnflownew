@@ -19,6 +19,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from db import supabase 
 from services.vision_service import analyze_diagram, describe_image
+from services.math_detector import extract_latex_from_image, analyze_math_diagram
 from services.mermaid_service import generate_concept_diagram, personalize_image_explanation
 from routers import scheduler, stats, admin, subscription, rate_limits, payment, contact, misconceptions, reviews, telegram_webhook, gamification, tests
 from services.agent_graph import generate_agentic_explanation
@@ -179,7 +180,7 @@ async def analyze_image_endpoint(req: ImageAnalysisRequest):
     print(f"👁️ Analyze Request | Context: {req.context} | Interest: {req.analogyTopic}")
 
     # Step 1: Check if we already have a personalized explanation for this user's interest
-    existing = supabase.table("paragraphs").select("explanation, image_description, analogy_topic").eq("id", req.paragraphId).single().execute()
+    existing = supabase.table("paragraphs").select("explanation, image_description, analogy_topic, contains_math, latex_content").eq("id", req.paragraphId).single().execute()
     
     # If we have a cached explanation with the SAME interest, return it
     if existing.data and existing.data.get("explanation"):
@@ -187,6 +188,26 @@ async def analyze_image_endpoint(req: ImageAnalysisRequest):
         if cached_topic.lower() == req.analogyTopic.lower():
             print(f"✅ Returning cached explanation (same interest)")
             return {"explanation": existing.data["explanation"]}
+    
+    # --- NEW: Check if this is a math equation ---
+    is_math = existing.data.get("contains_math", False) if existing.data else False
+    
+    # If it's math, use specialized math explanation
+    if is_math:
+        print(f"🧮 Math content detected - using specialized math explanation")
+        try:
+            explanation = await analyze_math_diagram(req.imageUrl, req.analogyTopic, req.context)
+            
+            # Save the math explanation
+            supabase.table("paragraphs").update({
+                "explanation": explanation,
+                "analogy_topic": req.analogyTopic
+            }).eq("id", req.paragraphId).execute()
+            
+            return {"explanation": explanation}
+        except Exception as e:
+            print(f"⚠️ Math explanation failed, falling back to standard: {e}")
+            # Fall through to standard explanation if math-specific fails
     
     # Step 2: Check if we have a cached IMAGE DESCRIPTION (the expensive part)
     image_description = existing.data.get("image_description") if existing.data else None
@@ -712,14 +733,32 @@ async def process_chapter_content(chapter_id: str):
                     )
                     public_url = supabase.storage.from_("book-assets").get_public_url(filename)
                     
-                    paragraphs_to_insert.append({
+                    # --- NEW: Try to extract LaTeX from diagrams too ---
+                    latex_result = None
+                    contains_math = False
+                    try:
+                        latex_result = await extract_latex_from_image(public_url)
+                        contains_math = latex_result.get("is_math", False)
+                        if contains_math and latex_result.get("success"):
+                            print(f"   📐 Diagram LaTeX: {latex_result['latex'][:50]}...")
+                    except Exception as latex_err:
+                        print(f"   ⚠️ Diagram LaTeX extraction skipped: {latex_err}")
+                    
+                    paragraph_data = {
                         "chapter_id": chapter_id, 
                         "content": public_url, 
                         "type": "image", # Treat as image
                         "order_index": global_order_index, 
                         "section_title": current_section,
-                        "is_completed": False
-                    })
+                        "is_completed": False,
+                        "contains_math": contains_math
+                    }
+                    
+                    # Add LaTeX if extracted
+                    if latex_result and latex_result.get("success") and latex_result.get("latex"):
+                        paragraph_data["latex_content"] = latex_result["latex"]
+                    
+                    paragraphs_to_insert.append(paragraph_data)
                     global_order_index += 1
                     
                     ignore_rects.append(d_rect_expanded)
@@ -767,14 +806,32 @@ async def process_chapter_content(chapter_id: str):
                         )
                         public_url = supabase.storage.from_("book-assets").get_public_url(filename)
                         
-                        paragraphs_to_insert.append({
+                        # --- NEW: Try to extract LaTeX from math equations ---
+                        latex_result = None
+                        contains_math = False
+                        try:
+                            latex_result = await extract_latex_from_image(public_url)
+                            contains_math = latex_result.get("is_math", False)
+                            if contains_math and latex_result.get("success"):
+                                print(f"   📐 Extracted LaTeX: {latex_result['latex'][:50]}...")
+                        except Exception as latex_err:
+                            print(f"   ⚠️ LaTeX extraction skipped: {latex_err}")
+                        
+                        paragraph_data = {
                             "chapter_id": chapter_id, 
                             "content": public_url, 
                             "type": "image",
                             "order_index": global_order_index, 
                             "section_title": current_section, 
-                            "is_completed": False
-                        })
+                            "is_completed": False,
+                            "contains_math": contains_math
+                        }
+                        
+                        # Add LaTeX content if successfully extracted
+                        if latex_result and latex_result.get("success") and latex_result.get("latex"):
+                            paragraph_data["latex_content"] = latex_result["latex"]
+                        
+                        paragraphs_to_insert.append(paragraph_data)
                         global_order_index += 1
                     except Exception: pass
 

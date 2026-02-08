@@ -59,6 +59,8 @@ interface Paragraph {
   section_title?: string;
   type?: "text" | "image" | "code" | "header";
   explanation?: string;
+  latex_content?: string; // NEW: LaTeX code extracted from math equations
+  contains_math?: boolean; // NEW: Flags math equations
 }
 
 interface Book {
@@ -111,6 +113,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
   const [bookXp, setBookXp] = useState(0);
   const [bookLevelXp, setBookLevelXp] = useState(0);
+  const [showLatexForPara, setShowLatexForPara] = useState<Record<string, boolean>>({});
 
   // Stats State
   const [userXp, setUserXp] = useState(0);
@@ -1438,30 +1441,72 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
               <div className="space-y-6">
                 {section.paragraphs.map((para) => {
-                  if (para.type === "image")
+                  if (para.type === "image") {
+                    // Check if we should show LaTeX for this paragraph
+                    const showLatex = showLatexForPara[para.id] ?? !!para.latex_content;
+                    
                     return (
                       <div
                         key={para.id}
-                        id={`para-${para.id}`} // <--- ADD THIS ID FOR SCROLLING
+                        id={`para-${para.id}`}
                         className={`
           flex flex-col items-center p-4 rounded-xl transition-all duration-500 mb-6
           ${
             para.is_completed
-              ? "border-2 border-orange-500 bg-orange-500/5" // <--- ORANGE OUTLINE
+              ? "border-2 border-orange-500 bg-orange-500/5"
               : "border border-white/5 bg-black/20"
           }
           ${activeParagraphId === para.id ? "ring-2 ring-purple-500 shadow-lg shadow-purple-900/20" : ""}
         `}
                       >
-                        <img
-                          src={para.content}
-                          alt="Diagram"
-                          className="max-h-[350px] rounded-lg object-contain"
-                        />
+                        {/* LaTeX Equation Block (Math-specific styling) */}
+                        {para.latex_content && showLatex ? (
+                          <div className="w-full relative group bg-[#2d2d2d] rounded-xl border border-white/10 overflow-hidden shadow-xl">
+                            <div className="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                              <div className="flex gap-1.5">
+                                <div className="w-3 h-3 rounded-full bg-red-500/20" />
+                                <div className="w-3 h-3 rounded-full bg-yellow-500/20" />
+                                <div className="w-3 h-3 rounded-full bg-green-500/20" />
+                              </div>
+                              <span className="text-xs font-mono font-medium text-gray-400">LaTeX</span>
+                              <button
+                                onClick={() => setShowLatexForPara({ ...showLatexForPara, [para.id]: false })}
+                                className="text-xs text-blue-400 hover:text-blue-300"
+                              >
+                                View Image
+                              </button>
+                            </div>
+                            <div className="p-6 overflow-x-auto">
+                              <ReactMarkdown
+                                remarkPlugins={[remarkMath]}
+                                rehypePlugins={[rehypeKatex]}
+                              >
+                                {para.latex_content}
+                              </ReactMarkdown>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="relative w-full">
+                            <img
+                              src={para.content}
+                              alt="Diagram"
+                              className="max-h-[350px] rounded-lg object-contain w-full"
+                            />
+                            {para.latex_content && (
+                              <button
+                                onClick={() => setShowLatexForPara({ ...showLatexForPara, [para.id]: true })}
+                                className="absolute top-2 right-2 px-3 py-1 bg-purple-600/90 hover:bg-purple-500 text-white text-xs rounded-full font-bold backdrop-blur-sm"
+                              >
+                                📐 View LaTeX
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        
                         {para.explanation ? (
                           <div className="mt-4 w-full bg-blue-900/20 border-l-4 border-cyan-400 p-4 rounded-r-lg text-sm text-gray-200">
                             <strong className="text-cyan-400 block mb-1 text-xs">
-                              AI VISION ANALYSIS
+                              {para.contains_math ? "🧮 MATH EXPLANATION" : "AI VISION ANALYSIS"}
                             </strong>
                             {para.explanation}
                           </div>
@@ -1474,12 +1519,13 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                             {analyzingParaId === para.id ? (
                               <Loader2 className="w-3 h-3 animate-spin" />
                             ) : (
-                              "✨ Explain Diagram"
+                              para.contains_math ? "📐 Explain Math" : "✨ Explain Diagram"
                             )}
                           </button>
                         )}
                       </div>
                     );
+                  }
                   // Text/Math
                   return (
                     <div
@@ -1685,18 +1731,38 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
           ))}
         </div>
         <div className="p-4 space-y-2">
-          <button
-            onClick={() => router.push(`/dashboard/book/${bookId}/test`)}
-            className="w-full p-3 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 rounded-xl flex items-center justify-center gap-2 text-sm font-bold transition"
-          >
-            <Trophy className="w-4 h-4" /> Take Test
-          </button>
-          <button
-            onClick={() => router.push("/dashboard")}
-            className="w-full p-3 bg-white/5 hover:bg-white/10 rounded-xl flex items-center justify-center gap-2 text-sm"
-          >
-            <LogOut className="w-4 h-4" /> Back to Dashboard
-          </button>
+          {(() => {
+            const completedParagraphsCount = paragraphs.filter(p => p.is_completed).length;
+            return (
+              <>
+                <button
+                  onClick={() => router.push(`/dashboard/book/${bookId}/test`)}
+                  disabled={completedParagraphsCount < 5}
+                  className={`w-full p-3 rounded-xl flex items-center justify-center gap-2 text-sm font-bold transition ${
+                    completedParagraphsCount >= 5
+                      ? "bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500"
+                      : "bg-gray-600/50 cursor-not-allowed opacity-60"
+                  }`}
+                  title={
+                    completedParagraphsCount < 5
+                      ? `Complete ${5 - completedParagraphsCount} more paragraph(s) to unlock tests (${completedParagraphsCount}/5)`
+                      : "Take a test on this book"
+                  }
+                >
+                  <Trophy className="w-4 h-4" /> Take Test
+                  {completedParagraphsCount < 5 && (
+                    <span className="text-xs opacity-70">({completedParagraphsCount}/5)</span>
+                  )}
+                </button>
+                <button
+                  onClick={() => router.push("/dashboard")}
+                  className="w-full p-3 bg-white/5 hover:bg-white/10 rounded-xl flex items-center justify-center gap-2 text-sm"
+                >
+                  <LogOut className="w-4 h-4" /> Back to Dashboard
+                </button>
+              </>
+            );
+          })()}
         </div>
       </div>
 

@@ -191,28 +191,45 @@ async def extract_concepts_from_book(book_id: str, chapter_id: Optional[str] = N
     Extract concepts from book paragraphs
     """
     try:
-        query = supabase.table("paragraphs") \
-            .select("content") \
-            .eq("book_id", book_id)
-        
+        # If specific chapter requested, use it directly
         if chapter_id:
-            query = query.eq("chapter_id", chapter_id)
+            query = supabase.table("paragraphs") \
+                .select("content, section_title") \
+                .eq("chapter_id", chapter_id) \
+                .limit(20).execute()
+        else:
+            # Get all chapters for this book first
+            chapters_result = supabase.table("chapters") \
+                .select("id") \
+                .eq("book_id", book_id) \
+                .execute()
+            
+            if not chapters_result.data:
+                return []
+            
+            # Get paragraphs from all chapters
+            chapter_ids = [c["id"] for c in chapters_result.data]
+            query = supabase.table("paragraphs") \
+                .select("content, section_title") \
+                .in_("chapter_id", chapter_ids) \
+                .limit(20).execute()
         
-        result = query.limit(20).execute()
-        
-        if not result.data:
+        if not query.data:
             return []
         
-        # Simple extraction: just use paragraph content as "concepts"
-        # In production, you'd use NER or concept extraction
+        # Extract concepts from content and section titles
         concepts = []
-        for para in result.data:
-            # Extract first sentence as concept proxy
-            content = para["content"][:100]
-            if len(content) > 10:
-                concepts.append(content)
+        for para in query.data:
+            # Prefer section titles as concepts
+            if para.get("section_title"):
+                concepts.append(para["section_title"])
+            else:
+                # Fall back to first sentence of content
+                content = para["content"][:100]
+                if len(content) > 10:
+                    concepts.append(content)
         
-        return concepts[:15]  # Limit for test generation
+        return list(set(concepts))[:15]  # Deduplicate and limit for test generation
         
     except Exception as e:
         print(f"⚠️ Could not extract concepts: {e}")
