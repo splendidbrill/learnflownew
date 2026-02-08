@@ -1072,6 +1072,36 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     }
   };
 
+  const handleMarkCompleted = async (paraId: string) => {
+      // Optimistic update
+      setParagraphs((prev) =>
+        prev.map((p) => {
+          if (p.id === paraId && !p.is_completed) {
+            // Only increment if not already completed
+            return { ...p, is_completed: true };
+          }
+          return p;
+        })
+      );
+  
+      // Sync with DB
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+           await supabase.from("user_progress").upsert({
+              user_id: user.id,
+              current_block_id: paraId,
+              is_completed: true,
+              last_accessed: new Date().toISOString()
+           });
+           // Re-fetch progress to double check
+           fetchStats(user.id);
+        }
+      } catch (err) {
+          console.error("Error marking completed:", err);
+      }
+  };
+
   // --- MISCONCEPTION FEEDBACK HANDLER ---
   const handleFeedback = async (messageId: string, messageContent: string, feedbackType: 'got_it' | 'confused') => {
     const { data: { user: currentUser } } = await supabase.auth.getUser();
