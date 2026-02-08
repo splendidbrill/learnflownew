@@ -808,6 +808,17 @@ async def process_chapter_content(chapter_id: str):
             for block in blocks:
                 block_bbox = fitz.Rect(block["bbox"])
                 
+                # --- FILTER HEADERS & FOOTERS (NOISE) ---
+                # If block is very close to top (<50px) or bottom (>50px from end), skip it
+                # Exception: If it's a very large block (likely main content), keep it
+                if block_bbox.height < 100:  # Only filter small blocks
+                    if block_bbox.y1 < 60: # Header
+                         # print(f"   🗑️ Skipping Header: {block_bbox}")
+                         continue
+                    if block_bbox.y0 > page.rect.height - 60: # Footer
+                         # print(f"   🗑️ Skipping Footer: {block_bbox}")
+                         continue
+
                 # CHECK CONFLICT: Is this block inside a diagram we already extracted?
                 # If area overlap is significant (>50%), skip it (it's likely part of the diagram text)
                 is_duplicate = False
@@ -848,8 +859,8 @@ async def process_chapter_content(chapter_id: str):
                         contains_math = False
                         try:
                             latex_result = await extract_latex_from_image(public_url)
-                            contains_math = latex_result.get("is_math", False)
-                            if contains_math and latex_result.get("success"):
+                            if latex_result and latex_result.get("success"):
+                                contains_math = True
                                 print(f"   📐 Extracted LaTeX: {latex_result['latex'][:50]}...")
                         except Exception as latex_err:
                             print(f"   ⚠️ LaTeX extraction skipped: {latex_err}")
@@ -937,9 +948,13 @@ async def process_chapter_content(chapter_id: str):
                                 # Quote it as latex
                                 block_text += "$$ " + clean_line.replace("$$", "") + " $$\n"
                             else:
-                                # Use newline instead of space to preserve formatting
-                                # But only if the line is long enough (avoid breaking mid-sentence too aggressively)
-                                if len(line_text) > 80 or line_text.strip().endswith((".", ":", "!", "?", ";")):
+                                # HEURISTIC: PRESERVE LISTS & OUTPUT FORMATTING
+                                # If line is short (< 65 chars), assume it's a hard break (like code output or list)
+                                # Unless it ends with a comma (continuation)
+                                if len(line_text) < 65 and not line_text.strip().endswith(","):
+                                     block_text += line_text + "\n"
+                                # Standard Punctuation check
+                                elif line_text.strip().endswith((".", ":", "!", "?", ";", "}", "{")):
                                      block_text += line_text + "\n"
                                 else:
                                      block_text += line_text + " "

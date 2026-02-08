@@ -105,6 +105,8 @@ def generate_explanation(content: str, interests: list, book_type: str):
     You are an expert tutor specializing in {book_type}.
     Your goal is to explain complex text using analogies related to: {interests_str}.
     
+    IMPORTANT: Ignore any text that looks like a page header, footer, or metadata (e.g., book titles like 'Let Us C', page numbers like '160', etc.). Focus ONLY on the educational content.
+    
     CRITICAL: Return ONLY valid JSON. Do not include markdown formatting (like ```json).
     
     Required JSON Structure:
