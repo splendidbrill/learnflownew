@@ -105,7 +105,15 @@ async def grade_test(session_id: str, user_answers: List[Dict]) -> Dict:
     else:
         results["recommendations"] = "Great job! You've mastered this material."
     
-    return results
+    return {
+        "score": results["score"],
+        "correct": results["correct"],
+        "total": results["total"],
+        "concept_breakdown": results["concept_breakdown"],
+        "weak_concepts": results["weak_concepts"],
+        "recommendations": results["recommendations"],
+        "question_results": results["question_results"]
+    }
 
 
 async def grade_short_answer(question: Dict, user_answer: str) -> bool:

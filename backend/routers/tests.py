@@ -169,7 +169,8 @@ async def submit_test(req: SubmitTestRequest):
             "total": results["total"],
             "concept_breakdown": results["concept_breakdown"],
             "weak_concepts": results["weak_concepts"],
-            "recommendations": results["recommendations"]
+            "recommendations": results["recommendations"],
+            "question_results": results.get("question_results", [])
         }
         
     except Exception as e:

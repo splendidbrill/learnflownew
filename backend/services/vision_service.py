@@ -99,3 +99,93 @@ async def _azure_vision(image_url: str, prompt: str) -> str:
     except Exception as e:
         print(f"❌ Azure Vision Failed: {e}")
         return f"I couldn't analyze this image. Azure Error: {str(e)}"
+
+
+async def is_valid_diagram(image_bytes: bytes) -> bool:
+    """
+    Uses GPT-4.1 mini to determine if an image is a real educational diagram
+    vs a watermark, background, or decorative element.
+    
+    Returns True if it's a valid diagram to keep, False if it should be filtered out.
+    """
+    if not AZURE_VISION_API_KEY or not AZURE_VISION_ENDPOINT:
+        print("⚠️ No Azure Vision credentials, skipping filter (keeping image)")
+        return True  # Fail open
+    
+    try:
+        import base64
+        import io
+        try:
+            from PIL import Image
+        except ImportError:
+            print("⚠️ Pillow not installed! Skipping optimization. (pip install Pillow)")
+            # Fallback: Treat as valid to avoid crash, OR try to send raw bytes if possible?
+            # sending raw bytes (image_bytes) is fine if < 20MB.
+            # But let's just return True to be safe and fast.
+            return True
+
+        # Optimize Image: Resize & Compress to JPEG
+        # This dramatically reduces API latency and cost
+        img = Image.open(io.BytesIO(image_bytes))
+        
+        # Resize if too large (max 512px)
+        if img.width > 512 or img.height > 512:
+            img.thumbnail((512, 512))
+            
+        # Convert to JPEG with quality 60
+        buffer = io.BytesIO()
+        img = img.convert("RGB") # Ensure RGB for JPEG
+        img.save(buffer, format="JPEG", quality=60)
+        optimized_bytes = buffer.getvalue()
+        
+        # Convert to base64
+        image_b64 = base64.b64encode(optimized_bytes).decode('utf-8')
+        data_url = f"data:image/jpeg;base64,{image_b64}"
+        
+        prompt = """
+        Look at this image from an educational textbook.
+        
+        Is this a meaningful educational diagram such as:
+        - A scientific illustration (biology, physics, chemistry)
+        - A flowchart or process diagram
+        - A graph, chart, or data visualization
+        - A technical drawing with labels
+        
+        Or is this NOT educational content, such as:
+        - A watermark or logo
+        - A decorative pattern
+        - A blank or nearly blank area
+        
+        Answer only YES if educational, or NO if not educational.
+        """
+        
+        client = AsyncAzureOpenAI(
+            azure_endpoint=AZURE_VISION_ENDPOINT,
+            api_key=AZURE_VISION_API_KEY,
+            api_version=AZURE_VISION_API_VERSION
+        )
+
+        response = await client.chat.completions.create(
+            model=AZURE_VISION_DEPLOYMENT, 
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            ],
+            max_tokens=10,  # Only need YES or NO
+            temperature=0.1  # Very deterministic
+        )
+
+        answer = response.choices[0].message.content.strip().upper()
+        is_valid = "YES" in answer
+        
+        print(f"   🔍 Vision Filter: {'✅ KEEP' if is_valid else '❌ SKIP'}")
+        return is_valid
+        
+    except Exception as e:
+        print(f"⚠️ Vision filter failed: {e}, keeping image")
+        return True  # Fail open

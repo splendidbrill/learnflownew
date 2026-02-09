@@ -18,11 +18,9 @@ from services.tts_service import generate_audio
 from langchain_openai import ChatOpenAI 
 from langchain_core.messages import HumanMessage, SystemMessage
 from db import supabase 
-from services.vision_service import analyze_diagram, describe_image
-from services.math_detector import extract_latex_from_image, analyze_math_diagram
+from services.vision_service import analyze_diagram, describe_image, is_valid_diagram
 from services.mermaid_service import generate_concept_diagram, personalize_image_explanation
-from routers import scheduler, stats, admin, subscription, rate_limits, payment, contact, misconceptions, reviews, telegram_webhook, gamification, tests
-from services.agent_graph import generate_agentic_explanation
+from routers import scheduler, stats, admin, subscription, rate_limits, payment, contact
 
 # 1. Load Env
 env_path = Path(__file__).parent / '.env'
@@ -46,11 +44,6 @@ app.include_router(subscription.router, prefix="/api")
 app.include_router(rate_limits.router, prefix="/api")
 app.include_router(payment.router, prefix="/api")
 app.include_router(contact.router, prefix="/api")
-app.include_router(misconceptions.router, prefix="/api")
-app.include_router(reviews.router, prefix="/api")
-app.include_router(telegram_webhook.router, prefix="/api")
-app.include_router(gamification.router)
-app.include_router(tests.router)
 
 # --- 3. SETUP TEXT BRAIN (DeepSeek via Azure) ---
 text_base_url = os.getenv("AZURE_TEXT_BASE_URL")
@@ -180,7 +173,7 @@ async def analyze_image_endpoint(req: ImageAnalysisRequest):
     print(f"👁️ Analyze Request | Context: {req.context} | Interest: {req.analogyTopic}")
 
     # Step 1: Check if we already have a personalized explanation for this user's interest
-    existing = supabase.table("paragraphs").select("explanation, image_description, analogy_topic, contains_math, latex_content").eq("id", req.paragraphId).single().execute()
+    existing = supabase.table("paragraphs").select("explanation, image_description, analogy_topic").eq("id", req.paragraphId).single().execute()
     
     # If we have a cached explanation with the SAME interest, return it
     if existing.data and existing.data.get("explanation"):
@@ -188,26 +181,6 @@ async def analyze_image_endpoint(req: ImageAnalysisRequest):
         if cached_topic.lower() == req.analogyTopic.lower():
             print(f"✅ Returning cached explanation (same interest)")
             return {"explanation": existing.data["explanation"]}
-    
-    # --- NEW: Check if this is a math equation ---
-    is_math = existing.data.get("contains_math", False) if existing.data else False
-    
-    # If it's math, use specialized math explanation
-    if is_math:
-        print(f"🧮 Math content detected - using specialized math explanation")
-        try:
-            explanation = await analyze_math_diagram(req.imageUrl, req.analogyTopic, req.context)
-            
-            # Save the math explanation
-            supabase.table("paragraphs").update({
-                "explanation": explanation,
-                "analogy_topic": req.analogyTopic
-            }).eq("id", req.paragraphId).execute()
-            
-            return {"explanation": explanation}
-        except Exception as e:
-            print(f"⚠️ Math explanation failed, falling back to standard: {e}")
-            # Fall through to standard explanation if math-specific fails
     
     # Step 2: Check if we have a cached IMAGE DESCRIPTION (the expensive part)
     image_description = existing.data.get("image_description") if existing.data else None
@@ -239,51 +212,41 @@ async def analyze_image_endpoint(req: ImageAnalysisRequest):
 
     return {"explanation": explanation}
 
-# 💬 C. CHAT & PROGRESS
-# Replace the existing /chat endpoint in main.py
 
-# 🧠 D. AGENTIC EXPLANATION (Multi-Step Pipeline)
-class AgenticExplainRequest(BaseModel):
+# --- D. AGENTIC EXPLANATION (Optimized) ---
+class AgenticExplanationRequest(BaseModel):
+    paragraph_id: str | None = None 
     content: str
     user_interest: str
     context: str = ""
-    paragraph_id: str = ""
+    difficulty_level: str = "medium"
 
 @app.post("/api/explain-agentic")
-async def explain_agentic_endpoint(req: AgenticExplainRequest):
-    """
-    Multi-step agentic explanation using LangGraph pipeline.
+async def explain_agentic_endpoint(req: AgenticExplanationRequest):
+    print(f"🤖 Agentic Explanation Request: {req.user_interest}")
     
-    Pipeline:
-    1. Parser: Extract concepts
-    2. Personalizer: Map to interest domains
-    3. Strategist: Generate 3 candidates
-    4. Evaluator: Select best explanation
-    """
-    print(f"🧠 Agentic Explain | Interest: {req.user_interest} | Context: {req.context}")
+    # Lazy import to avoid circular dependencies
+    from services.agent_graph import generate_agentic_explanation
     
-    try:
-        result = await generate_agentic_explanation(
-            content=req.content,
-            user_interest=req.user_interest,
-            context=req.context
-        )
-        
-        # Optionally save to paragraph if ID provided
-        if req.paragraph_id and result.get("explanation"):
-            supabase.table("paragraphs").update({
-                "explanation": result["explanation"],
-                "analogy_topic": req.user_interest
-            }).eq("id", req.paragraph_id).execute()
-        
-        return {
-            "explanation": result["explanation"],
-            "concepts": result.get("concepts", []),
-            "reasoning": result.get("reasoning", "")
-        }
-    except Exception as e:
-        print(f"❌ Agentic explain error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    explanation_data = await generate_agentic_explanation(
+        content=req.content,
+        user_interest=req.user_interest,
+        context=req.context,
+        difficulty_level=req.difficulty_level
+    )
+    
+    # Optionally save to DB if paragraphId provided
+    if req.paragraph_id and explanation_data.get("explanation"):
+        try:
+             # We let frontend handle the saving to 'chat_logs', but we can also update 'paragraphs' if needed
+             # For now, just return the data as the frontend seems to handle saving
+             pass
+        except: pass
+
+    return explanation_data
+
+# 💬 C. CHAT & PROGRESS
+# Replace the existing /chat endpoint in main.py
 
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest):
@@ -372,7 +335,7 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
     supabase.table("course_books").update({"status": "processing"}).eq("id", book_id).execute()
     
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.get(file_url)
             pdf_bytes = resp.content
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -546,28 +509,12 @@ CRITICAL:
                                        'table of', 'index', 'appendix', 'glossary', 'bibliography']
                     
                     filtered_chapters = []
-                    seen_titles = set()  # For deduplication
-                    
                     for chap in detected_chapters:
-                        title = chap.get("title", "").lower().strip()
-                        
-                        # Skip excluded keywords
-                        if any(kw in title for kw in exclude_keywords):
-                            continue
-                        
-                        # Normalize title for duplicate detection
-                        # Remove "Chapter X:" prefix to catch "Chapter 1" and "CHAPTER 1: INTRO" as duplicates
-                        normalized = re.sub(r'chapter\s*\d+:?\s*', '', title).strip()
-                        
-                        # Skip exact duplicates
-                        if normalized in seen_titles:
-                            print(f"   ⚠️ Skipping duplicate chapter: {chap['title']}")
-                            continue
-                        
-                        seen_titles.add(normalized)
-                        filtered_chapters.append(chap)
+                        title = chap.get("title", "").lower()
+                        if not any(kw in title for kw in exclude_keywords):
+                            filtered_chapters.append(chap)
                     
-                    print(f"🎯 AI detected {len(detected_chapters)} entries, kept {len(filtered_chapters)} unique chapters!")
+                    print(f"🎯 AI detected {len(detected_chapters)} entries, kept {len(filtered_chapters)} chapters!")
                     
                     for chap in filtered_chapters:
                         chapters_to_save.append({
@@ -604,9 +551,8 @@ CRITICAL:
         print(f"✅ Scan Complete.")
 
     except Exception as e:
-        import traceback
         print(f"❌ Error: {str(e)}")
-        print(f"❌ Traceback: {traceback.format_exc()}")
+        traceback.print_exc()  # Show full error details
         supabase.table("course_books").update({"status": "failed"}).eq("id", book_id).execute()
 
 # --- HELPER: Vector Diagram Detection ---
@@ -681,7 +627,8 @@ async def process_chapter_content(chapter_id: str):
         
         book = supabase.table("course_books").select("file_url").eq("id", book_id).single().execute()
         
-        async with httpx.AsyncClient() as client:
+        # Increase timeout for large PDF downloads
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.get(book.data['file_url'])
             pdf_bytes = resp.content
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -689,33 +636,12 @@ async def process_chapter_content(chapter_id: str):
         next_chap = supabase.table("chapters").select("start_page_num").eq("book_id", book_id).gt("order_index", chapter.data['order_index']).order("order_index").limit(1).execute()
         
         # --- NEW LOGIC: Calculate precise page range ---
-        start_idx = max(0, start_page - 1)  # Convert 1-indexed to 0-indexed
-        
-        # --- ROBUSTNESS FIX: Handle logical vs physical page number mismatch ---
-        # If start_idx exceeds document length, we likely have logical page numbers (e.g. 218)
-        # mapped to a short PDF (e.g. 5 pages).
-        if start_idx >= len(doc):
-            print(f"⚠️ Page {start_idx} out of bounds (Doc len: {len(doc)}). Assuming logical page numbering mismatch.")
-            # If it's the first chapter or very close to start, assume it starts at the beginning
-            if chapter.data.get('order_index') == 1:
-                start_idx = 0
-                print(f"   -> Resetting Chapter 1 start to page 0")
-            else:
-                 # Clamp to end
-                 start_idx = max(0, len(doc) - 1)
-                 print(f"   -> Clamping start to page {start_idx}")
-
-        end_idx = len(doc)  # Default to end of document
+        start_idx = max(0, start_page - 1)
+        end_idx = len(doc) # Default to end
 
         if next_chap.data:
-            # If there is a next chapter, stop BEFORE it starts
-            # next_chap['start_page_num'] is 1-indexed, convert to 0-indexed
-            next_chapter_start = next_chap.data[0]['start_page_num'] - 1
-            end_idx = next_chapter_start
-        
-        # Ensure end_idx is never less than start_idx
-        if end_idx <= start_idx:
-            end_idx = start_idx + 1  # Process at least 1 page
+            # If there is a next chapter, stop before it
+            end_idx = max(0, next_chap.data[0]['start_page_num'] - 1)
         
         # Determine total pages
         total_pages_to_process = end_idx - start_idx
@@ -752,6 +678,34 @@ async def process_chapter_content(chapter_id: str):
             ignore_rects = [] # Areas where we have extracted a diagram, so ignore text here
             
             for d_rect in diagram_rects:
+                # --- SKIP FULL-PAGE "DIAGRAMS" ---
+                # If the detected region covers more than 50% of page, it's a full-page scan, not a diagram
+                rect_area = d_rect.width * d_rect.height
+                page_area = page_rect.width * page_rect.height
+                if rect_area > page_area * 0.5:
+                    print(f"   ⛔ SKIPPED: Full-page vector region ({rect_area/page_area*100:.1f}%)")
+                    continue
+                
+                # --- SKIP EXERCISE SECTIONS (should be text, not images) ---
+                # Check if there's text inside this region that looks like exercises
+                region_text = ""
+                for b in blocks:
+                    if b["type"] == 0:  # Text block
+                        b_rect = fitz.Rect(b["bbox"])
+                        if d_rect.intersects(b_rect):
+                            for l in b["lines"]:
+                                for s in l["spans"]:
+                                    region_text += s["text"] + " "
+                
+                # If region contains exercise-related keywords, skip diagram extraction
+                exercise_keywords = ["exercise", "question", "q.", "q1", "q2", "answer", "solve", "find the", "calculate", "what is", "why do", "how do", "explain"]
+                region_lower = region_text.lower()
+                is_exercise_region = any(kw in region_lower for kw in exercise_keywords)
+                
+                if is_exercise_region and len(region_text) > 100:
+                    print(f"   📝 SKIPPED: Exercise section detected (will extract as text)")
+                    continue
+                
                 # Expand slightly to catch labels just outside
                 d_rect_expanded = fitz.Rect(d_rect.x0 - 5, d_rect.y0 - 5, d_rect.x1 + 5, d_rect.y1 + 5)
                 
@@ -760,42 +714,32 @@ async def process_chapter_content(chapter_id: str):
                     mat = fitz.Matrix(2.0, 2.0)
                     pix = page.get_pixmap(matrix=mat, clip=d_rect_expanded)
                     if pix.alpha: pix = fitz.Pixmap(pix, 0)
+                    
+                    image_bytes = pix.tobytes("png")
+
+                    # --- VISION FILTER: Check if it's a real diagram ---
+                    is_valid = await is_valid_diagram(image_bytes)
+                    if not is_valid:
+                        print(f"   🚫 Vision Filter rejected region")
+                        continue
 
                     filename = f"diagrams/{book_id}/{chapter_id}_{global_order_index}.png"
                     
                     # Upload
                     supabase.storage.from_("book-assets").upload(
-                        path=filename, file=pix.tobytes("png"),
+                        path=filename, file=image_bytes,
                         file_options={"content-type": "image/png", "upsert": "true"}
                     )
                     public_url = supabase.storage.from_("book-assets").get_public_url(filename)
                     
-                    # --- NEW: Try to extract LaTeX from diagrams too ---
-                    latex_result = None
-                    contains_math = False
-                    try:
-                        latex_result = await extract_latex_from_image(public_url)
-                        contains_math = latex_result.get("is_math", False)
-                        if contains_math and latex_result.get("success"):
-                            print(f"   📐 Diagram LaTeX: {latex_result['latex'][:50]}...")
-                    except Exception as latex_err:
-                        print(f"   ⚠️ Diagram LaTeX extraction skipped: {latex_err}")
-                    
-                    paragraph_data = {
+                    paragraphs_to_insert.append({
                         "chapter_id": chapter_id, 
                         "content": public_url, 
                         "type": "image", # Treat as image
                         "order_index": global_order_index, 
                         "section_title": current_section,
-                        "is_completed": False,
-                        "contains_math": contains_math
-                    }
-                    
-                    # Add LaTeX if extracted
-                    if latex_result and latex_result.get("success") and latex_result.get("latex"):
-                        paragraph_data["latex_content"] = latex_result["latex"]
-                    
-                    paragraphs_to_insert.append(paragraph_data)
+                        "is_completed": False
+                    })
                     global_order_index += 1
                     
                     ignore_rects.append(d_rect_expanded)
@@ -808,17 +752,6 @@ async def process_chapter_content(chapter_id: str):
             for block in blocks:
                 block_bbox = fitz.Rect(block["bbox"])
                 
-                # --- FILTER HEADERS & FOOTERS (NOISE) ---
-                # If block is very close to top (<50px) or bottom (>50px from end), skip it
-                # Exception: If it's a very large block (likely main content), keep it
-                if block_bbox.height < 100:  # Only filter small blocks
-                    if block_bbox.y1 < 60: # Header
-                         # print(f"   🗑️ Skipping Header: {block_bbox}")
-                         continue
-                    if block_bbox.y0 > page.rect.height - 60: # Footer
-                         # print(f"   🗑️ Skipping Footer: {block_bbox}")
-                         continue
-
                 # CHECK CONFLICT: Is this block inside a diagram we already extracted?
                 # If area overlap is significant (>50%), skip it (it's likely part of the diagram text)
                 is_duplicate = False
@@ -839,60 +772,88 @@ async def process_chapter_content(chapter_id: str):
                 # --- IMAGES (Raster) ---
                 if block["type"] == 1: 
                     bbox = fitz.Rect(block["bbox"])
-                    if bbox.width < 150 or bbox.height < 150: continue
-                    if (bbox.width * bbox.height) > (page_rect.width * page_rect.height * 0.9): continue
+                    area_pct = (bbox.width * bbox.height) / (page_rect.width * page_rect.height) * 100
+                    
+                    if bbox.width < 150 or bbox.height < 150: 
+                        continue
+                    
+                    # --- DEDUPLICATION: Skip if overlaps with already-extracted diagram ---
+                    is_duplicate = False
+                    for ir in ignore_rects:
+                        intersect = bbox & ir
+                        if not intersect.is_empty:
+                            overlap_area = intersect.width * intersect.height
+                            bbox_area = bbox.width * bbox.height
+                            if bbox_area > 0 and (overlap_area / bbox_area) > 0.5:
+                                is_duplicate = True
+                                break
+                    if is_duplicate:
+                        print(f"   ⛔ SKIPPED: Duplicate (already extracted as vector diagram)")
+                        continue
+                    
+                    # Skip full-page images (>90% area) - backgrounds/scans
+                    if area_pct > 90:
+                        print(f"   ⛔ SKIPPED: Full-page image ({area_pct:.1f}%)")
+                        continue
+                    
+                    # Skip known watermark size (443x443 appears on every page of some PDFs)
+                    if 440 < bbox.width < 450 and 440 < bbox.height < 450:
+                        print(f"   ⛔ SKIPPED: Watermark ({bbox.width:.0f}x{bbox.height:.0f})")
+                        continue
+                    
+                    print(f"   ✅ KEEPING: Image ({bbox.width:.0f}x{bbox.height:.0f}, {area_pct:.1f}%)")
 
                     try:
                         mat = fitz.Matrix(2.0, 2.0) 
                         pix = page.get_pixmap(matrix=mat, clip=bbox)
-                        if pix.alpha: pix = fitz.Pixmap(pix, 0) 
+                        if pix.alpha: pix = fitz.Pixmap(pix, 0)
+                        
+                        image_bytes = pix.tobytes("png")
+                        
+                        # --- VISION FILTER: Check if it's a real diagram ---
+                        is_valid = await is_valid_diagram(image_bytes)
+                        if not is_valid:
+                            print(f"   🚫 Vision Filter rejected raster image")
+                            continue
 
                         filename = f"{book_id}/{chapter_id}_{global_order_index}.png"
                         supabase.storage.from_("book-assets").upload(
-                            path=filename, file=pix.tobytes("png"),
+                            path=filename, file=image_bytes,
                             file_options={"content-type": "image/png", "upsert": "true"}
                         )
                         public_url = supabase.storage.from_("book-assets").get_public_url(filename)
                         
-                        # --- NEW: Try to extract LaTeX from math equations ---
-                        latex_result = None
-                        contains_math = False
-                        try:
-                            latex_result = await extract_latex_from_image(public_url)
-                            if latex_result and latex_result.get("success"):
-                                contains_math = True
-                                print(f"   📐 Extracted LaTeX: {latex_result['latex'][:50]}...")
-                        except Exception as latex_err:
-                            print(f"   ⚠️ LaTeX extraction skipped: {latex_err}")
-                        
-                        paragraph_data = {
+                        paragraphs_to_insert.append({
                             "chapter_id": chapter_id, 
                             "content": public_url, 
                             "type": "image",
-                            "order_index": global_order_index, 
                             "section_title": current_section, 
-                            "is_completed": False,
-                            "contains_math": contains_math
-                        }
-                        
-                        # Add LaTeX content if successfully extracted
-                        if latex_result and latex_result.get("success") and latex_result.get("latex"):
-                            paragraph_data["latex_content"] = latex_result["latex"]
-                        
-                        paragraphs_to_insert.append(paragraph_data)
+                            "is_completed": False
+                        })
                         global_order_index += 1
+                        
+                        # --- FIX DUPLICATES: Ignore text in this region ---
+                        ignore_rects.append(bbox)
+                        
                     except Exception: pass
+
 
                 # --- TEXT ---
                 elif block["type"] == 0:
                     block_text = ""
                     is_header = False
                     is_code_block = False
+                    is_exercise_block = False  # NEW: Detect exercise questions
                     
                     for line in block["lines"]:
                         line_text = ""
                         for span in line["spans"]:
                             span_text = span["text"]
+                            
+                            # CLEANUP: Skip lines that are just file references (e.g. ":52.7 .giF")
+                            if re.search(r'\.(gif|jpg|png|tif|bmp)\b', span_text.lower()) and len(span_text) < 50:
+                                continue
+
                             font_name = span["font"].lower()
                             
                             # DEBUG: Trace fonts to fix detection
@@ -906,6 +867,14 @@ async def process_chapter_content(chapter_id: str):
                             # If a line ends with ; or { or }, it's likely code. 
                             if span_text.strip().endswith((";", "{", "}", "*/")):
                                 is_code_block = True
+                            
+                            # Check for Exercise/Question patterns
+                            span_lower = span_text.lower().strip()
+                            if (span_lower.startswith(("exercise", "questions", "q.", "q ")) or
+                                re.match(r'^\d+\.\s', span_text.strip()) or  # "1. ", "2. " etc
+                                "what is" in span_lower or "why do" in span_lower or 
+                                "explain" in span_lower or "describe" in span_lower):
+                                is_exercise_block = True
 
                             # Check if text might be reversed (common PDF issue)
                             # SKIP if it looks like a formula (has = or * or /)
@@ -923,11 +892,6 @@ async def process_chapter_content(chapter_id: str):
                                 if reversed_matches > original_matches:
                                     span_text = reversed_text
                                     
-                            
-                            # Define these variables in the outer scope so they're available below
-                            clean_line = line_text.strip()
-                            is_math_line = False
-
                             line_text += span_text + " "
                             if span["size"] > 14: is_header = True
                         
@@ -936,28 +900,27 @@ async def process_chapter_content(chapter_id: str):
                             block_text += line_text.strip() + "\n"
                         else:
                             # New MATH Detection for individual lines
-                            # Heuristic: Contains = AND some math operator OR typical tokens
-                            if "=" in clean_line and len(clean_line) < 100:
-                                if any(op in clean_line for op in ["+", "*", "/", "^", "\\", "{", "}"]):
+                            clean_line = line_text.strip()
+                            # Heuristic: Contains =, <, > AND some math operator OR typical tokens
+                            is_math_line = False
+                            
+                            # Standard Equation: "x = y + 2" or "2x > 8"
+                            if any(op in clean_line for op in ["=", "<", ">", "≤", "≥", "≠"]) and len(clean_line) < 100:
+                                if any(op in clean_line for op in ["+", "*", "/", "^", "\\", "{", "}", "%", "-", "(", ")"]):
                                     is_math_line = True
-                                elif re.search(r'\b(si|p|n|r|x|y|f\(x\))\b', clean_line): # Variable heuristics
+                                elif re.search(r'\b(sin|cos|tan|log|ln|lim|x|y|z|theta|pi)\b', clean_line.lower()): # Variable heuristics
                                     is_math_line = True
+                                    
+                            # Pure Math Expression (short): "2x + 5y"
+                            elif len(clean_line) < 50 and any(op in clean_line for op in ["+", "*", "^"]) and re.search(r'[0-9]', clean_line):
+                                 is_math_line = True
                             
                             # If it looks like a formula, wrap it immediately for this line
                             if is_math_line and not is_header:
                                 # Quote it as latex
                                 block_text += "$$ " + clean_line.replace("$$", "") + " $$\n"
                             else:
-                                # HEURISTIC: PRESERVE LISTS & OUTPUT FORMATTING
-                                # If line is short (< 65 chars), assume it's a hard break (like code output or list)
-                                # Unless it ends with a comma (continuation)
-                                if len(line_text) < 65 and not line_text.strip().endswith(","):
-                                     block_text += line_text + "\n"
-                                # Standard Punctuation check
-                                elif line_text.strip().endswith((".", ":", "!", "?", ";", "}", "{")):
-                                     block_text += line_text + "\n"
-                                else:
-                                     block_text += line_text + " "
+                                block_text += line_text
                     
                     clean_text = block_text.strip()
                     if not clean_text or len(clean_text) < 3: continue
@@ -969,6 +932,10 @@ async def process_chapter_content(chapter_id: str):
                     if is_code_block and not is_header:
                         # Clean up any potential double wrapping if logic expands
                         clean_text = f"```c\n{clean_text}\n```"
+                    
+                    # Wrap Exercise Blocks (styled like code but for questions)
+                    elif is_exercise_block and not is_header:
+                        clean_text = f"**📝 Exercises**\n\n{clean_text}"
 
                     # Merge logic
                     if not is_header and paragraphs_to_insert:
@@ -1023,6 +990,8 @@ async def process_chapter_content(chapter_id: str):
 
     except Exception as e:
         print(f"❌ Error generating chapter: {str(e)}")
+        import traceback
+        traceback.print_exc()
         # Optional: Mark as failed?
         try:
              supabase.table("chapters").update({"status": "failed"}).eq("id", chapter_id).execute()
