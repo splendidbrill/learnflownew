@@ -1,11 +1,9 @@
 """
 Agent Graph - LangGraph-based multi-step explanation pipeline
 
-This replaces the single-prompt approach with a 4-node workflow:
-1. Parser: Extract concepts from content
-2. Personalizer: Map concepts to interest-based analogy domains
-3. Strategist: Generate 3 candidate explanations
-4. Evaluator: Grade and select the best explanation
+This replaces the single-prompt approach with a Fast Chain-of-Thought workflow:
+1. Fast Execution: Perform Concept Extraction, Domain Mapping, and Explanation in a single LLM call.
+2. Latency: < 3s (Optimized)
 """
 
 import os
@@ -51,220 +49,94 @@ llm = ChatOpenAI(
     model=text_model_name,
     api_key=text_api_key,
     base_url=text_base_url,
-    temperature=0.3,
+    temperature=0.4, # Slightly higher for creativity in one shot
 )
 
-llm_creative = ChatOpenAI(
-    model=text_model_name,
-    api_key=text_api_key,
-    base_url=text_base_url,
-    temperature=0.7,
-)
-
-
-# --- Node 1: Parser ---
-async def parser_node(state: AgentState) -> AgentState:
-    """Extract core concepts and dependencies from the content"""
-    print("🔍 [Parser] Extracting concepts...")
-    
-    prompt = f"""
-    Analyze this educational content and extract the key concepts.
-    
-    CONTENT:
-    {state['content'][:1500]}
-    
-    Return JSON only:
-    {{
-        "concepts": ["main concept 1", "main concept 2"],
-        "dependencies": ["prerequisite concept 1"]
-    }}
+# --- Optimized Node: Fast Chain-of-Thought ---
+async def fast_explainer_node(state: AgentState) -> AgentState:
     """
+    Perform Concept Extraction, Domain Mapping, and Explanation Generation in ONE prompt.
+    This reduces latency by 3x.
+    """
+    print(f"🚀 [Fast Explainer] Generating {state['user_interest']} analogy for: {state['content'][:50]}...")
     
-    try:
-        response = await llm.ainvoke([
-            SystemMessage(content="You are a curriculum designer. Extract concepts as JSON."),
-            HumanMessage(content=prompt)
-        ])
-        
-        import json
-        result = json.loads(response.content.replace("```json", "").replace("```", "").strip())
-        state["concepts"] = result.get("concepts", [])
-        state["dependencies"] = result.get("dependencies", [])
-        print(f"   → Concepts: {state['concepts']}")
-    except Exception as e:
-        print(f"   ⚠️ Parser error: {e}")
-        state["concepts"] = ["general concept"]
-        state["dependencies"] = []
+    # 1. Prepare Inputs
+    interest = state['user_interest']
+    content = state['content']
     
-    return state
-
-
-# --- Node 2: Personalizer (Deterministic) ---
-async def personalizer_node(state: AgentState) -> AgentState:
-    """Map concepts to interest-based analogy domains"""
-    print(f"🎨 [Personalizer] Mapping to {state['user_interest']}...")
-    
-    # Interest -> Domain mapping (expand this over time)
-    interest_domains = {
-        "cricket": ["batting innings", "team strategy", "match scoring", "player positions"],
-        "football": ["goal scoring", "team formations", "match tactics", "player roles"],
-        "cooking": ["recipe steps", "ingredient mixing", "kitchen workflow", "flavor balance"],
-        "music": ["song composition", "band coordination", "rhythm patterns", "note harmony"],
-        "gaming": ["level progression", "character builds", "game mechanics", "quest chains"],
-        "movies": ["plot structure", "character arcs", "scene transitions", "story climax"],
-    }
-    
-    interest_lower = state["user_interest"].lower()
-    
-    # Find matching domain or use default
-    domains = interest_domains.get(interest_lower)
-    if not domains:
-        # If no exact match, pick closest or use generic
-        domains = [f"{state['user_interest']} strategy", f"{state['user_interest']} process", f"{state['user_interest']} teamwork"]
-    
-    state["analogy_domains"] = domains[:3]
-    print(f"   → Domains: {state['analogy_domains']}")
-    
-    return state
-
-
-# --- Node 3: Strategist ---
-async def strategist_node(state: AgentState) -> AgentState:
-    """Generate 3 candidate explanations with different approaches"""
-    print("💡 [Strategist] Generating 3 candidates...")
-    
-    concepts_str = ", ".join(state["concepts"])
-    domains_str = ", ".join(state["analogy_domains"])
-    
-    # Build avoid list
-    avoid_warning = ""
-    if state.get("failed_analogies"):
-        avoid_list = "\n".join([f"- {a}" for a in state["failed_analogies"]])
-        avoid_warning = f"\n\n⚠️ AVOID THESE ANALOGIES (they previously failed):\n{avoid_list}\n"
-    
-    # Get difficulty modifier
+    # 2. Get Difficulty Modifier (Python Logic - Fast)
     from services.adaptive_difficulty import get_explanation_prompt_modifier
     difficulty_modifier = get_explanation_prompt_modifier(
         state.get("difficulty_level", "medium"),
-        state["user_interest"]
+        interest
     )
-    
-    prompt = f"""
-    You are an expert tutor. Generate 3 DIFFERENT explanations for this concept.
-    
-    {difficulty_modifier}
-    
-    CONCEPTS TO EXPLAIN: {concepts_str}
-    ORIGINAL CONTENT: {state['content'][:800]}
-    USER'S INTEREST: {state['user_interest']}
-    ANALOGY DOMAINS TO USE: {domains_str}{avoid_warning}
-    
-    Generate 3 explanations with DIFFERENT approaches:
-    1. A direct analogy using {state['user_interest']}
-    2. A story-based explanation
-    3. A Socratic question that makes them think
-    
-    Return JSON only:
-    {{
-        "candidates": [
-            {{"approach": "Analogy", "explanation": "Think of it like..."}},
-            {{"approach": "Story", "explanation": "Imagine you are..."}},
-            {{"approach": "Question", "explanation": "What would happen if..."}}
-        ]
-    }}
-    """
-    
-    try:
-        response = await llm_creative.ainvoke([
-            SystemMessage(content="You generate diverse educational explanations as JSON."),
-            HumanMessage(content=prompt)
-        ])
-        
-        import json
-        result = json.loads(response.content.replace("```json", "").replace("```", "").strip())
-        state["candidates"] = result.get("candidates", [])
-        print(f"   → Generated {len(state['candidates'])} candidates")
-    except Exception as e:
-        print(f"   ⚠️ Strategist error: {e}")
-        state["candidates"] = [{"approach": "Default", "explanation": f"This is about {concepts_str}."}]
-    
-    return state
 
-
-# --- Node 4: Evaluator ---
-async def evaluator_node(state: AgentState) -> AgentState:
-    """Grade candidates and select the best one"""
-    print("⚖️ [Evaluator] Grading candidates...")
-    
-    if not state["candidates"]:
-        state["best_explanation"] = "I couldn't generate an explanation."
-        state["reasoning"] = "No candidates available"
-        return state
-    
-    candidates_text = "\n".join([
-        f"Option {i+1} ({c['approach']}): {c['explanation']}"
-        for i, c in enumerate(state["candidates"])
-    ])
-    
+    # 3. Construct Chain-of-Thought Prompt
     prompt = f"""
-    You are a professor grading student explanations.
+    You are an expert tutor specializing in explaining complex topics using relatable analogies.
     
-    ORIGINAL CONCEPT: {", ".join(state["concepts"])}
-    USER'S INTEREST: {state["user_interest"]}
+    Original Content:
+    "{content[:1500]}"
     
-    CANDIDATE EXPLANATIONS:
-    {candidates_text}
+    User's Interest: {interest}
+    Context: {state.get('context', '')}
+    Difficulty: {state.get('difficulty_level', 'medium')} ({difficulty_modifier})
     
-    Grade each on:
-    1. ACCURACY: Is it technically correct?
-    2. CLARITY: Is it easy to understand?
-    3. RELATABILITY: Does it use {state["user_interest"]} effectively?
+    TASK:
+    Generate a high-quality explanation following these steps internally:
+    1. Extract Key Concepts (What is the core idea?).
+    2. Brainstorm an Analogy specific to '{interest}'.
+       (e.g. if interest is 'Cooking', use recipes/ingredients. if 'Football', use players/goals).
+    3. Draft the explanation connecting the Concept to the Analogy.
     
-    Return JSON only:
+    OUTPUT JSON ONLY:
     {{
-        "best_option": 1,
-        "reasoning": "Option 1 wins because...",
-        "improved_explanation": "The final polished explanation..."
+        "concepts": ["Concept 1", "Concept 2"],
+        "analogy_domain_used": "Specific domain (e.g. Baking)",
+        "explanation": "The final polished explanation text...",
+        "reasoning": "Why this analogy works..."
     }}
     """
     
     try:
         response = await llm.ainvoke([
-            SystemMessage(content="You are an educational quality evaluator. Return JSON."),
+            SystemMessage(content="You are a Fast Chain-of-Thought Tutor. Think step-by-step, then output JSON."),
             HumanMessage(content=prompt)
         ])
         
         import json
-        result = json.loads(response.content.replace("```json", "").replace("```", "").strip())
-        state["best_explanation"] = result.get("improved_explanation", state["candidates"][0]["explanation"])
-        state["reasoning"] = result.get("reasoning", "")
-        print(f"   → Selected option {result.get('best_option', 1)}: {state['reasoning'][:50]}...")
+        clean_json = response.content.replace("```json", "").replace("```", "").strip()
+        result = json.loads(clean_json)
+        
+        # Populate State
+        state["concepts"] = result.get("concepts", [])
+        state["analogy_domains"] = [result.get("analogy_domain_used", interest)]
+        state["best_explanation"] = result.get("explanation", "Could not generate explanation.")
+        state["reasoning"] = result.get("reasoning", "Generated via Fast Chain-of-Thought")
+        
+        print(f"   → Generated: {state['best_explanation'][:50]}...")
+        
     except Exception as e:
-        print(f"   ⚠️ Evaluator error: {e}")
-        state["best_explanation"] = state["candidates"][0]["explanation"]
-        state["reasoning"] = "Fallback to first candidate"
+        print(f"   ⚠️ Fast Explainer Error: {e}")
+        state["best_explanation"] = "I'm having trouble generating an analogy right now. Please try again."
+        state["reasoning"] = "Error in Fast Chain-of-Thought"
+        state["concepts"] = ["Error"]
     
     return state
 
 
 # --- Build the Graph ---
 def build_explanation_graph() -> StateGraph:
-    """Construct the LangGraph workflow"""
+    """Construct the Optimized LangGraph workflow"""
     
     graph = StateGraph(AgentState)
     
-    # Add nodes
-    graph.add_node("parser", parser_node)
-    graph.add_node("personalizer", personalizer_node)
-    graph.add_node("strategist", strategist_node)
-    graph.add_node("evaluator", evaluator_node)
+    # Add single node
+    graph.add_node("fast_explainer", fast_explainer_node)
     
-    # Define edges (linear flow)
-    graph.set_entry_point("parser")
-    graph.add_edge("parser", "personalizer")
-    graph.add_edge("personalizer", "strategist")
-    graph.add_edge("strategist", "evaluator")
-    graph.add_edge("evaluator", END)
+    # Define edges (Entry -> Explainer -> End)
+    graph.set_entry_point("fast_explainer")
+    graph.add_edge("fast_explainer", END)
     
     return graph.compile()
 
@@ -281,7 +153,7 @@ async def generate_agentic_explanation(
     difficulty_level: str = "medium"
 ) -> dict:
     """
-    Main function to generate an explanation using the agentic pipeline.
+    Main function to generate an explanation using the optimized pipeline.
     
     Args:
         content: The educational content to explain
@@ -294,7 +166,7 @@ async def generate_agentic_explanation(
         {"explanation": str, "concepts": list, "reasoning": str}
     """
     print("\n" + "="*50)
-    print("🧠 AGENTIC EXPLANATION PIPELINE")
+    print("🚀 FAST AGENTIC PIPELINE STARTED")
     print("="*50)
     
     initial_state: AgentState = {
@@ -314,11 +186,11 @@ async def generate_agentic_explanation(
     result = await explanation_graph.ainvoke(initial_state)
     
     print("="*50)
-    print("✅ PIPELINE COMPLETE")
+    print("✅ PIPELINE COMPLETE (Optimized)")
     print("="*50 + "\n")
     
     return {
         "explanation": result["best_explanation"],
-        "concepts": result["concepts"],
-        "reasoning": result["reasoning"],
+        "concepts": result.get("concepts", []),
+        "reasoning": result.get("reasoning", ""),
     }

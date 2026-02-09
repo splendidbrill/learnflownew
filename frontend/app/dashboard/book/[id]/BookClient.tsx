@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import React, { useEffect, useState, useRef } from "react";
 import { Suspense } from "react";
@@ -273,6 +273,9 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
       if (paraError) return;
 
+      const filteredRaw = rawParagraphs || [];
+
+
       // 2. Fetch User Progress
       let completedIds = new Set();
       if (user) {
@@ -283,7 +286,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
           .eq("is_completed", true)
           .in(
             "current_block_id",
-            rawParagraphs.map((p) => p.id),
+            filteredRaw.map((p) => p.id),
           );
 
         if (progressData) {
@@ -292,7 +295,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
       }
 
       // 3. Merge
-      const mergedParagraphs = rawParagraphs.map((p) => ({
+      const mergedParagraphs = filteredRaw.map((p) => ({
         ...p,
         is_completed: completedIds.has(p.id),
       }));
