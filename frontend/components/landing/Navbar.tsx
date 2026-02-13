@@ -182,10 +182,20 @@ export default function Navbar() {
               </div>
 
               {/* Auth Section - Desktop */}
-              <div className="hidden md:block">
+              <div className="hidden md:flex items-center gap-4">
                 {loading ? (
                   <div className="w-10 h-10 cursor-pointer rounded-full bg-white/10 animate-pulse" />
                 ) : user ? (
+                  <>
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={handleDashboard}
+                    className="bg-gradient-to-br from-white/10 to-white/5 hover:from-white/15 hover:to-white/10 text-white border border-white/20 backdrop-blur-xl px-6 py-2.5 rounded-lg transition-all duration-200 font-medium flex items-center gap-2"
+                  >
+                    <LayoutDashboard className="w-4 h-4" />
+                    Dashboard
+                  </motion.button>
                   <div className="relative" ref={dropdownRef}>
                     <motion.button
                       whileHover={{ scale: 1.05 }}
@@ -231,6 +241,7 @@ export default function Navbar() {
                       )}
                     </AnimatePresence>
                   </div>
+                  </>
                 ) : (
                   <motion.button
                     whileHover={{ scale: 1.05 }}

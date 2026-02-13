@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 from services.tts_service import generate_audio
 from typing import List, Optional
 import asyncio
+import html
 from PIL import Image
 
 # --- IMPORTS ---
@@ -123,6 +124,36 @@ class MermaidRequest(BaseModel):
 # --- ENDPOINTS ---
 
 # 📊 MERMAID DIAGRAM GENERATION
+def clean_math_text(text: str) -> str:
+    """Clean OCR output: decode HTML entities + convert ^ to superscripts."""
+    if not text:
+        return text
+    
+    # Decode HTML entities
+    text = html.unescape(text)
+    
+    # Convert ^ notation to Unicode superscripts
+    superscripts = {
+        '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
+        '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
+        '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾',
+        'n': 'ⁿ'
+    }
+    
+    def replace_superscript(match):
+        char = match.group(1)
+        return superscripts.get(char, f'^{char}')
+    
+    text = re.sub(r'\^([0-9n+\-=()])', replace_superscript, text)
+    
+    return text
+
+async def ocr_worker(img_bytes, idx):
+    async with sem:
+        result = await extract_text_with_mistral(img_bytes, domain=book_domain)
+        result = clean_math_text(result)  # <-- Just call it here
+        # ...
+        return result
 
 
 def extract_chapter_number(title: str) -> Optional[int]:
@@ -873,76 +904,72 @@ def merge_rects(rects, threshold=25):
         merged.append(current)
     return merged
 
-def extract_tables_from_page(pdf_path: str, page_num: int) -> list[dict]:
+
+
+def extract_tables_from_page(pdf_bytes: bytes, page_num: int) -> List[str]:
     """
-    Extract tables from a specific page using pdfplumber.
-    Returns list of table info with HTML content and bounding box.
+    Extract tables from a PDF page using pdfplumber.
+    Returns list of HTML table strings.
     """
-    tables_found = []
+    tables_html = []
     
     try:
-        import pdfplumber
-        
-        with pdfplumber.open(pdf_path) as pdf:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             if page_num >= len(pdf.pages):
-                return tables_found
+                return tables_html
             
             page = pdf.pages[page_num]
             extracted_tables = page.extract_tables()
             
-            if not extracted_tables:
-                return tables_found
-            
-            # Get table bounding boxes
-            tables_with_bbox = page.find_tables()
-            
-            for idx, table in enumerate(extracted_tables):
-                if not table or len(table) < 2:  # Skip empty or single-row tables
+            for table in extracted_tables:
+                if not table or len(table) < 2:
                     continue
                 
-                # Clean table data
+                # Clean up the table - split multi-line cells
                 cleaned_table = []
                 for row in table:
-                    cleaned_row = [str(cell).strip() if cell else "" for cell in row]
-                    if any(cell for cell in cleaned_row):  # Skip empty rows
-                        cleaned_table.append(cleaned_row)
+                    cleaned_row = []
+                    for cell in row:
+                        if cell:
+                            # Replace newlines with spaces
+                            cell = str(cell).replace('\n', ' ').strip()
+                        cleaned_row.append(cell or '')
+                    cleaned_table.append(cleaned_row)
                 
+                # Skip if table is too small
                 if len(cleaned_table) < 2:
                     continue
                 
-                # Convert to HTML
-                html_parts = ['<table style="border-collapse: collapse; width: 100%; margin: 10px 0;">']
+                # Convert to HTML table
+                html_out = '<div class="table-container" style="overflow-x: auto; margin: 20px 0;">\n'
+                html_out += '<table style="border-collapse: collapse; width: 100%; font-size: 14px; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">\n'
                 
                 for row_idx, row in enumerate(cleaned_table):
-                    tag = 'th' if row_idx == 0 else 'td'
-                    html_parts.append('<tr>')
-                    for cell in row:
-                        cell_style = 'border: 1px solid #ddd; padding: 8px; text-align: left;'
-                        if row_idx == 0:
-                            cell_style += ' background-color: #f5f5f5; font-weight: bold;'
-                        html_parts.append(f'<{tag} style="{cell_style}">{cell}</{tag}>')
-                    html_parts.append('</tr>')
+                    # Skip completely empty rows
+                    if all(not c for c in row):
+                        continue
+                    
+                    if row_idx == 0:
+                        # Header row
+                        html_out += '<thead>\n<tr style="background-color: #1F4E79; color: white;">\n'
+                        for cell in row:
+                            html_out += f'<th style="border: 1px solid #ddd; padding: 10px; text-align: center; font-weight: 600;">{cell}</th>\n'
+                        html_out += '</tr>\n</thead>\n<tbody>\n'
+                    else:
+                        # Data row with alternating colors
+                        bg_color = '#f9f9f9' if row_idx % 2 == 0 else '#ffffff'
+                        html_out += f'<tr style="background-color: {bg_color};">\n'
+                        for cell in row:
+                            html_out += f'<td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{cell}</td>\n'
+                        html_out += '</tr>\n'
                 
-                html_parts.append('</table>')
-                html_content = ''.join(html_parts)
-                
-                # Get bounding box if available
-                bbox = None
-                if idx < len(tables_with_bbox):
-                    bbox = tables_with_bbox[idx].bbox  # (x0, top, x1, bottom)
-                
-                tables_found.append({
-                    'html': html_content,
-                    'bbox': bbox,
-                    'rows': len(cleaned_table),
-                    'cols': len(cleaned_table[0]) if cleaned_table else 0
-                })
+                html_out += '</tbody>\n</table>\n</div>'
+                tables_html.append(html_out)
     
     except Exception as e:
-        print(f"Error extracting tables from page {page_num}: {e}")
+        print(f"   ⚠️ Table extraction error on page {page_num + 1}: {e}")
     
-    return tables_found
-
+    return tables_html
 
 async def upload_image_to_supabase(supabase, path: str, img_bytes: bytes, max_retries: int = 3) -> tuple:
     for attempt in range(max_retries):
@@ -1161,9 +1188,21 @@ def _detect_code_blocks(text: str) -> str:
     
     return '\n'.join(result)
 
+
+
+
+
+
+
 async def process_chapter_content(chapter_id: str):
     """
-    Process a chapter with diagrams, tables, and text.
+    Process a chapter with:
+    - User-selected book domain (description field)
+    - Math books: Skip diagram extraction
+    - Physics/CS/Other books: Full diagram extraction
+    - TOC validation for books without TOC
+    - Proper page boundary checks
+    - HTML entity decoding and superscript conversion
     """
     from services.azure_mistral_service import extract_text_with_mistral
     
@@ -1180,24 +1219,41 @@ async def process_chapter_content(chapter_id: str):
         chapter_number = extract_chapter_number(chapter_title)
         current_order = chapter.data['order_index']
         
-        # Get book info
-        book = supabase.table("course_books").select("file_url, title, analogy_topic").eq("id", book_id).single().execute()
-        book_domain = book.data.get('analogy_topic', '')
+        # Get book info (including description which stores user-selected domain)
+        book = supabase.table("course_books").select("file_url, title, analogy_topic, description").eq("id", book_id).single().execute()
+        book_title = book.data.get('title', '')
+        book_description = book.data.get('description', '')
         
-        if not book_domain or len(book_domain) < 3:
-            title_lower = book.data.get('title', '').lower()
-            if "physics" in title_lower or "science" in title_lower: 
-                book_domain = "physics"
-            elif "math" in title_lower: 
-                book_domain = "math"
-            elif "biology" in title_lower: 
-                book_domain = "biology"
-            elif "chemistry" in title_lower: 
-                book_domain = "chemistry"
-            else: 
-                book_domain = "general"
+        # ============================================================
+        # DETECT BOOK TYPE (Hybrid: User selection + Title fallback)
+        # ============================================================
+        book_type = "general"
+        
+        if book_description == 'Math':
+            book_type = "math"
+        elif book_description == 'Science':
+            book_type = "science"
+        elif book_description == 'Computer Science':
+            book_type = "computer"
+        elif book_description in ['History', 'Geography', 'Political Science', 'Literature', 'Self Help']:
+            book_type = "general"
+        elif book_description == 'Others' or not book_description:
+            title_lower = book_title.lower()
+            if any(kw in title_lower for kw in ['math', 'calculus', 'algebra', 'geometry', 'statistics', 'trigonometry']):
+                book_type = "math"
+            elif any(kw in title_lower for kw in ['physics', 'chemistry', 'biology', 'science']):
+                book_type = "science"
+            elif any(kw in title_lower for kw in ['computer', 'programming', 'coding', 'python', 'java', 'javascript']):
+                book_type = "computer"
+            else:
+                book_type = "general"
+        
+        book_domain = book_type if book_type != "general" else book.data.get('analogy_topic', 'general')
         
         print(f"📖 Chapter: '{chapter_title}'")
+        print(f"   Book: '{book_title}'")
+        print(f"   Domain: {book_description or 'Not set'}")
+        print(f"   Type: {book_type.upper()}")
         print(f"   Number: {chapter_number}")
         print(f"   TOC Start: page {start_page}")
 
@@ -1220,27 +1276,32 @@ async def process_chapter_content(chapter_id: str):
                 f.write(pdf_bytes)
         
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        total_pdf_pages = len(doc)
         
-        # Get next chapter
-        next_chap = supabase.table("chapters").select("start_page_num, title, order_index").eq("book_id", book_id).gt("order_index", current_order).order("order_index").limit(1).execute()
+        print(f"   📄 PDF has {total_pdf_pages} pages")
+        
+        all_chapters = supabase.table("chapters").select("id, title, start_page_num, order_index").eq("book_id", book_id).order("order_index").execute()
+        total_chapters = len(all_chapters.data) if all_chapters.data else 1
         
         # ============================================================
-        # STEP 1: Find TRUE start page
+        # DETECT IF BOOK HAS VALID TOC
         # ============================================================
-        print(f"\n🔍 Step 1: Finding chapter start...")
+        print(f"\n🔍 Detecting book structure...")
         
-        start_idx = start_page - 1
-        search_range = 35
-        found_start = False
+        has_valid_toc = True
         
-        for offset in range(search_range):
-            for direction in [0, 1, -1]:
-                check_idx = start_idx + offset * direction if direction != 0 else start_idx + offset
-                
-                if check_idx < 0 or check_idx >= len(doc):
-                    continue
-                
-                page = doc[check_idx]
+        if all_chapters.data:
+            for ch in all_chapters.data:
+                if ch['start_page_num'] > total_pdf_pages:
+                    print(f"   ⚠️ Chapter '{ch['title']}' has invalid start page {ch['start_page_num']} > {total_pdf_pages}")
+                    has_valid_toc = False
+                    break
+        
+        chapter_headers_found = []
+        if not has_valid_toc or total_chapters <= 1:
+            print(f"   🔍 Scanning for chapter headers...")
+            for page_num in range(min(total_pdf_pages, 50)):
+                page = doc[page_num]
                 blocks = page.get_text("dict")["blocks"]
                 
                 for b in blocks:
@@ -1251,51 +1312,56 @@ async def process_chapter_content(chapter_id: str):
                         line_text = " ".join([s["text"] for s in line["spans"]])
                         max_size = max([s["size"] for s in line["spans"]])
                         
-                        if max_size > 30 and chapter_number:
-                            nums = re.findall(r'\d+', line_text)
-                            if nums and len(nums) == 1 and int(nums[0]) == chapter_number:
-                                new_start = check_idx + 1
-                                if new_start != start_page:
-                                    print(f"   ✅ Corrected: page {start_page} → {new_start}")
-                                    start_page = new_start
-                                    start_idx = check_idx
-                                    supabase.table("chapters").update({"start_page_num": new_start}).eq("id", chapter_id).execute()
-                                else:
-                                    print(f"   ✅ Start confirmed: page {start_page}")
-                                found_start = True
-                                break
-                    if found_start:
-                        break
-                if found_start:
+                        if max_size > 28:
+                            text_lower = line_text.lower().strip()
+                            if text_lower.startswith("chapter") or re.match(r'^\d+[\.\s]', text_lower):
+                                chapter_headers_found.append({
+                                    'page': page_num + 1,
+                                    'text': line_text[:60],
+                                    'size': max_size
+                                })
+                                print(f"      Found: '{line_text[:50]}...' at page {page_num + 1}")
+            
+            if len(chapter_headers_found) <= 1:
+                print(f"   📖 This appears to be a SINGLE CHAPTER BOOK (no TOC)")
+                has_valid_toc = False
+            elif len(chapter_headers_found) >= 2:
+                print(f"   📚 Found {len(chapter_headers_found)} chapter headers")
+        
+        # ============================================================
+        # DETERMINE PAGE RANGE
+        # ============================================================
+        
+        if not has_valid_toc or total_chapters <= 1:
+            print(f"\n📖 SINGLE CHAPTER MODE: Processing entire book")
+            
+            start_idx = 0
+            end_idx = total_pdf_pages - 1
+            
+            for page_num in range(min(10, total_pdf_pages)):
+                page = doc[page_num]
+                text = page.get_text("text")
+                if len(text.strip()) > 200:
+                    start_idx = page_num
                     break
-            if found_start:
-                break
-        
-        if not found_start:
-            print(f"   ⚠️ Using TOC value: page {start_page}")
-            start_idx = start_page - 1
-        
-        # ============================================================
-        # STEP 2: Find TRUE end
-        # ============================================================
-        print(f"\n🔍 Step 2: Finding chapter end...")
-        
-        if next_chap.data:
-            next_start_toc = next_chap.data[0]['start_page_num']
-            next_title = next_chap.data[0]['title']
-            next_ch_num = chapter_number + 1 if chapter_number else None
             
-            print(f"   Next chapter: '{next_title}' (TOC says page {next_start_toc})")
+            print(f"   Content starts at page {start_idx + 1}")
+            print(f"   Content ends at page {end_idx + 1}")
             
-            next_idx = next_start_toc - 1
-            end_idx = next_start_toc - 2
-            found_next = False
+        else:
+            print(f"\n📚 MULTI-CHAPTER MODE: Using TOC")
             
-            for offset in range(25):
+            print(f"\n🔍 Step 1: Finding chapter start...")
+            
+            start_idx = max(0, min(start_page - 1, total_pdf_pages - 1))
+            search_range = 35
+            found_start = False
+            
+            for offset in range(search_range):
                 for direction in [0, 1, -1]:
-                    check_idx = next_idx + offset * direction if direction != 0 else next_idx + offset
+                    check_idx = start_idx + offset * direction if direction != 0 else start_idx + offset
                     
-                    if check_idx < 0 or check_idx >= len(doc):
+                    if check_idx < 0 or check_idx >= total_pdf_pages:
                         continue
                     
                     page = doc[check_idx]
@@ -1309,114 +1375,218 @@ async def process_chapter_content(chapter_id: str):
                             line_text = " ".join([s["text"] for s in line["spans"]])
                             max_size = max([s["size"] for s in line["spans"]])
                             
-                            if max_size > 30 and next_ch_num:
+                            if max_size > 30 and chapter_number:
                                 nums = re.findall(r'\d+', line_text)
-                                if nums and len(nums) == 1 and int(nums[0]) == next_ch_num:
-                                    end_idx = check_idx - 1
-                                    print(f"   ✅ Next chapter found at page {check_idx + 1}")
-                                    print(f"   ✅ This chapter ends at page {end_idx + 1}")
-                                    found_next = True
+                                if nums and len(nums) == 1 and int(nums[0]) == chapter_number:
+                                    new_start = check_idx + 1
+                                    if new_start != start_page:
+                                        print(f"   ✅ Corrected: page {start_page} → {new_start}")
+                                        start_page = new_start
+                                        start_idx = check_idx
+                                        supabase.table("chapters").update({"start_page_num": new_start}).eq("id", chapter_id).execute()
+                                    else:
+                                        print(f"   ✅ Start confirmed: page {start_page}")
+                                    found_start = True
                                     break
+                        if found_start:
+                            break
+                    if found_start:
+                        break
+                if found_start:
+                    break
+            
+            if not found_start:
+                print(f"   ⚠️ Using TOC value: page {start_page}")
+                start_idx = max(0, min(start_page - 1, total_pdf_pages - 1))
+            
+            print(f"\n🔍 Step 2: Finding chapter end...")
+            
+            next_chap = supabase.table("chapters").select("start_page_num, title, order_index").eq("book_id", book_id).gt("order_index", current_order).order("order_index").limit(1).execute()
+            
+            if next_chap.data:
+                next_start_toc = next_chap.data[0]['start_page_num']
+                next_title = next_chap.data[0]['title']
+                next_ch_num = chapter_number + 1 if chapter_number else None
+                
+                print(f"   Next chapter: '{next_title}' (TOC says page {next_start_toc})")
+                
+                next_idx = min(next_start_toc - 1, total_pdf_pages - 1)
+                end_idx = min(next_start_toc - 2, total_pdf_pages - 1)
+                found_next = False
+                
+                for offset in range(25):
+                    for direction in [0, 1, -1]:
+                        check_idx = next_idx + offset * direction if direction != 0 else next_idx + offset
+                        
+                        if check_idx < 0 or check_idx >= total_pdf_pages:
+                            continue
+                        
+                        page = doc[check_idx]
+                        blocks = page.get_text("dict")["blocks"]
+                        
+                        for b in blocks:
+                            if b["type"] != 0:
+                                continue
+                            
+                            for line in b["lines"]:
+                                line_text = " ".join([s["text"] for s in line["spans"]])
+                                max_size = max([s["size"] for s in line["spans"]])
+                                
+                                if max_size > 30 and next_ch_num:
+                                    nums = re.findall(r'\d+', line_text)
+                                    if nums and len(nums) == 1 and int(nums[0]) == next_ch_num:
+                                        end_idx = check_idx - 1
+                                        print(f"   ✅ Next chapter found at page {check_idx + 1}")
+                                        print(f"   ✅ This chapter ends at page {end_idx + 1}")
+                                        found_next = True
+                                        break
+                            if found_next:
+                                break
                         if found_next:
                             break
                     if found_next:
                         break
-                if found_next:
-                    break
+                
+                if not found_next:
+                    end_idx = min(next_start_toc - 2, total_pdf_pages - 1)
+                    print(f"   ⚠️ Using TOC boundary: page {end_idx + 1}")
+            else:
+                end_idx = total_pdf_pages - 1
+                print(f"   Last chapter, ends at page {end_idx + 1}")
             
-            if not found_next:
-                end_idx = next_start_toc - 2
-                print(f"   ⚠️ Using TOC boundary: page {end_idx + 1}")
-        else:
-            end_idx = len(doc) - 1
-            print(f"   Last chapter, ends at page {end_idx + 1}")
+            if end_idx < start_idx:
+                print(f"   ⚠️ ERROR: end < start! Adjusting...")
+                end_idx = min(start_idx + 14, total_pdf_pages - 1)
         
-        if end_idx < start_idx:
-            print(f"   ⚠️ ERROR: end < start! Using 15 pages default")
-            end_idx = min(start_idx + 14, len(doc) - 1)
+        start_idx = max(0, min(start_idx, total_pdf_pages - 1))
+        end_idx = max(start_idx, min(end_idx, total_pdf_pages - 1))
         
         total_pages = end_idx - start_idx + 1
         
         print(f"\n{'='*50}")
-        print(f"📄 PAGE RANGE: {start_idx + 1} to {end_idx + 1} ({total_pages} pages)")
+        print(f"📄 PAGE RANGE CONFIRMED:")
+        print(f"   PDF Total Pages: {total_pdf_pages}")
+        print(f"   Start: PDF page {start_idx + 1}")
+        print(f"   End:   PDF page {end_idx + 1}")
+        print(f"   Total: {total_pages} pages")
         print(f"{'='*50}")
         
         supabase.table("paragraphs").delete().eq("chapter_id", chapter_id).execute()
         
         # ============================================================
-        # STEP 3: Extract content (Images + Tables + OCR)
+        # CONFIGURATION BASED ON BOOK TYPE
         # ============================================================
         print(f"\n📸 Step 3: Extracting content...")
+        
+        if book_type == "math":
+            print(f"   📐 MATH BOOK: Skipping diagram extraction")
+            extract_diagrams = False
+            extract_images = False
+        else:
+            print(f"   📚 {book_type.upper()} BOOK: Full diagram extraction")
+            extract_diagrams = True
+            extract_images = True
         
         page_texts = []
         page_images = []
         page_tables = []
+        upload_queue = []
+        ocr_jobs = []
+        ocr_index_map = {}
         current_section = chapter_title
-        image_counter = 0
-        
-        stats = {
-            'diagrams_found': 0,
-            'images_found': 0,
-            'uploaded': 0,
-            'skipped': 0,
-            'failed': 0,
-            'tables_found': 0
-        }
         
         for page_num in range(start_idx, end_idx + 1):
+            if page_num < 0 or page_num >= total_pdf_pages:
+                print(f"   ⚠️ Skipping out-of-bounds page {page_num}")
+                continue
+            
             page = doc[page_num]
             page_rect = page.rect
             blocks = page.get_text("dict")["blocks"]
             this_page_images = []
             ignore_rects = []
             
-            # === Extract tables ===
             tables_html = extract_tables_from_page(pdf_bytes, page_num)
             page_tables.append(tables_html)
-            stats['tables_found'] += len(tables_html)
             
             if tables_html:
                 print(f"   📊 Page {page_num + 1}: {len(tables_html)} table(s)")
             
-            # === Extract vector diagrams ===
-            try:
-                diagram_regions = get_solid_diagram_regions(page)
-                
-                for d_rect in diagram_regions:
-                    if d_rect.width < 80 or d_rect.height < 80:
+            if extract_diagrams:
+                try:
+                    diagram_rects = get_solid_diagram_regions(page)
+                    
+                    for d_rect in diagram_rects:
+                        if d_rect.width < 100 or d_rect.height < 100:
+                            continue
+                        
+                        aspect_ratio = d_rect.width / d_rect.height if d_rect.height > 0 else 0
+                        if aspect_ratio > 5:
+                            continue
+                        
+                        rect_area = d_rect.width * d_rect.height
+                        page_area = page_rect.width * page_rect.height
+                        if rect_area > page_area * 0.5:
+                            continue
+                        
+                        try:
+                            mat = fitz.Matrix(2.0, 2.0)
+                            pix = page.get_pixmap(matrix=mat, clip=d_rect)
+                            if pix.alpha: 
+                                pix = fitz.Pixmap(pix, 0)
+                            img_bytes = pix.tobytes("png")
+                            
+                            if await is_valid_diagram(img_bytes):
+                                idx = len(page_images) * 100 + len(this_page_images)
+                                filename = f"{book_id}/{chapter_id}_{idx}.png"
+                                upload_queue.append((filename, img_bytes))
+                                url = supabase.storage.from_("book-assets").get_public_url(filename)
+                                this_page_images.append({
+                                    "chapter_id": chapter_id,
+                                    "content": url,
+                                    "type": "image",
+                                    "section_title": current_section,
+                                    "is_completed": False
+                                })
+                                ignore_rects.append(d_rect)
+                        except:
+                            pass
+                except:
+                    pass
+            
+            if extract_images:
+                for block in blocks:
+                    if block["type"] != 1:
                         continue
                     
-                    rect_area = d_rect.width * d_rect.height
-                    page_area = page_rect.width * page_rect.height
-                    if rect_area > page_area * 0.6:
+                    bbox = fitz.Rect(block["bbox"])
+                    if bbox.width < 150 or bbox.height < 150:
+                        continue
+                    
+                    aspect_ratio = bbox.width / bbox.height if bbox.height > 0 else 0
+                    if aspect_ratio > 4:
+                        continue
+                    
+                    area_pct = (bbox.width * bbox.height) / (page_rect.width * page_rect.height) * 100
+                    if area_pct > 90:
+                        continue
+                    
+                    skip = any(bbox & ir for ir in ignore_rects) if ignore_rects else False
+                    if skip:
                         continue
                     
                     try:
                         mat = fitz.Matrix(2.0, 2.0)
-                        pix = page.get_pixmap(matrix=mat, clip=d_rect)
+                        pix = page.get_pixmap(matrix=mat, clip=bbox)
                         if pix.alpha: 
                             pix = fitz.Pixmap(pix, 0)
                         img_bytes = pix.tobytes("png")
                         
-                        is_valid, w, h, err = is_valid_image_simple(img_bytes)
-                        
-                        if not is_valid:
-                            stats['skipped'] += 1
-                            continue
-                        
-                        if is_watermark_size(w, h):
-                            stats['skipped'] += 1
-                            continue
-                        
-                        stats['diagrams_found'] += 1
-                        
-                        filename = f"{book_id}/{chapter_id}_{image_counter}.png"
-                        image_counter += 1
-                        
-                        success, url, error = await upload_image_to_supabase(supabase, filename, img_bytes)
-                        
-                        if success:
-                            stats['uploaded'] += 1
+                        if await is_valid_diagram(img_bytes):
+                            idx = len(page_images) * 100 + len(this_page_images)
+                            filename = f"{book_id}/{chapter_id}_{idx}.png"
+                            upload_queue.append((filename, img_bytes))
+                            url = supabase.storage.from_("book-assets").get_public_url(filename)
                             this_page_images.append({
                                 "chapter_id": chapter_id,
                                 "content": url,
@@ -1424,184 +1594,77 @@ async def process_chapter_content(chapter_id: str):
                                 "section_title": current_section,
                                 "is_completed": False
                             })
-                            ignore_rects.append(d_rect)
-                            print(f"   ✅ Diagram: {w}x{h} on page {page_num + 1}")
-                        else:
-                            stats['failed'] += 1
-                            print(f"   ❌ Upload failed: {error}")
-                            
-                    except Exception as e:
-                        stats['failed'] += 1
-                        
-            except Exception as e:
-                pass
+                    except:
+                        pass
             
-            # === Extract raster images ===
-            for block in blocks:
-                if block["type"] != 1:
-                    continue
-                
-                bbox = fitz.Rect(block["bbox"])
-                if bbox.width < 100 or bbox.height < 100:
-                    continue
-                
-                skip = any(bbox & ir for ir in ignore_rects)
-                if skip:
-                    continue
-                
-                area_pct = (bbox.width * bbox.height) / (page_rect.width * page_rect.height) * 100
-                if area_pct > 85:
-                    continue
-                
-                try:
-                    mat = fitz.Matrix(2.0, 2.0)
-                    pix = page.get_pixmap(matrix=mat, clip=bbox)
-                    if pix.alpha: 
-                        pix = fitz.Pixmap(pix, 0)
-                    img_bytes = pix.tobytes("png")
-                    
-                    is_valid, w, h, err = is_valid_image_simple(img_bytes)
-                    
-                    if not is_valid:
-                        stats['skipped'] += 1
-                        continue
-                    
-                    if is_watermark_size(w, h):
-                        stats['skipped'] += 1
-                        continue
-                    
-                    stats['images_found'] += 1
-                    
-                    filename = f"{book_id}/{chapter_id}_{image_counter}.png"
-                    image_counter += 1
-                    
-                    success, url, error = await upload_image_to_supabase(supabase, filename, img_bytes)
-                    
-                    if success:
-                        stats['uploaded'] += 1
-                        this_page_images.append({
-                            "chapter_id": chapter_id,
-                            "content": url,
-                            "type": "image",
-                            "section_title": current_section,
-                            "is_completed": False
-                        })
-                    else:
-                        stats['failed'] += 1
-                        
-                except Exception as e:
-                    stats['failed'] += 1
-            
-            # Queue for OCR
             pix = page.get_pixmap()
             if pix.alpha: 
                 pix = fitz.Pixmap(pix, 0)
             
+            ocr_index_map[len(ocr_jobs)] = len(page_texts)
+            ocr_jobs.append(pix.tobytes("png"))
             page_texts.append(None)
             page_images.append(this_page_images)
         
-        print(f"\n📊 Extraction Stats:")
-        print(f"   Diagrams found: {stats['diagrams_found']}")
-        print(f"   Raster images:  {stats['images_found']}")
-        print(f"   Tables:         {stats['tables_found']}")
-        print(f"   Uploaded:       {stats['uploaded']}")
-        print(f"   Skipped:        {stats['skipped']}")
-        print(f"   Failed:         {stats['failed']}")
+        print(f"   Images: {len(upload_queue)}, Tables: {sum(len(t) for t in page_tables)}, Pages: {len(ocr_jobs)}")
         
-        # ============================================================
-        # STEP 4: Run OCR
-        # ============================================================
-        print(f"\n🔍 Step 4: Running OCR on {len(page_texts)} pages...")
-        
-        sem = asyncio.Semaphore(4)
-        completed = [0]
-        
-        async def ocr_page(page_idx):
-            async with sem:
-                page = doc[page_idx]
-                pix = page.get_pixmap()
-                if pix.alpha:
-                    pix = fitz.Pixmap(pix, 0)
-                img_bytes = pix.tobytes("png")
-                
-                result = await extract_text_with_mistral(img_bytes, domain=book_domain)
-                completed[0] += 1
-                
-                if completed[0] % 5 == 0 or completed[0] == len(page_texts):
-                    pct = int((completed[0] / len(page_texts)) * 90)
-                    try:
-                        supabase.table("chapters").update({"status": f"processing_{pct}"}).eq("id", chapter_id).execute()
-                    except:
-                        pass
-                
-                return result
-        
-        results = await asyncio.gather(*[ocr_page(start_idx + i) for i in range(len(page_texts))])
-        
-        for i, text in enumerate(results):
-            page_texts[i] = text
-        
-        print(f"   ✅ OCR complete")
-        
-        # ============================================================
-        # STEP 5: Minimal trim (only first page check)
-        # ============================================================
-        print(f"\n✂️ Step 5: Validating first page...")
-        
-        if page_texts and page_texts[0] and chapter_number and chapter_number > 1:
-            first_text = page_texts[0].lower()
-            prev_ch = chapter_number - 1
+        if upload_queue:
+            print(f"\n📤 Uploading {len(upload_queue)} images...")
             
-            end_text = first_text[-600:] if len(first_text) > 600 else first_text
-            has_end = "exercises" in end_text or "what you have learnt" in end_text
-            has_prev = f"chapter {prev_ch}" in first_text
+            async def upload_worker(path, data):
+                try:
+                    await asyncio.to_thread(
+                        supabase.storage.from_("book-assets").upload,
+                        path=path, file=data,
+                        file_options={"content-type": "image/png", "upsert": "true"}
+                    )
+                except:
+                    pass
             
-            if has_end and has_prev:
-                page = doc[start_idx]
-                blocks = page.get_text("dict")["blocks"]
-                has_header = False
-                
-                for b in blocks:
-                    if b["type"] != 0:
-                        continue
-                    for line in b["lines"]:
-                        max_size = max([s["size"] for s in line["spans"]])
-                        if max_size > 30:
-                            nums = re.findall(r'\d+', " ".join([s["text"] for s in line["spans"]]))
-                            if nums and int(nums[0]) == chapter_number:
-                                has_header = True
-                                break
-                    if has_header:
-                        break
-                
-                if not has_header:
-                    print(f"   🗑️ Skipping first page")
-                    page_texts[0] = ""
-                    page_images[0] = []
-                    page_tables[0] = []
-                else:
-                    print(f"   ✅ First page valid")
-            else:
-                print(f"   ✅ First page valid")
-        else:
-            print(f"   ✅ Skipped")
+            await asyncio.gather(*[upload_worker(p, d) for p, d in upload_queue])
+            print(f"   ✅ Done")
         
         # ============================================================
-        # STEP 6: Build paragraphs
+        # RUN OCR WITH MATH TEXT CLEANING
         # ============================================================
-        print(f"\n📝 Step 6: Building paragraphs...")
+        print(f"\n🔍 Running OCR...")
+        
+        if ocr_jobs:
+            sem = asyncio.Semaphore(4)
+            completed = [0]
+            
+            async def ocr_worker(img_bytes, idx):
+                async with sem:
+                    result = await extract_text_with_mistral(img_bytes, domain=book_domain)
+                    result = clean_math_text(result)
+                    completed[0] += 1
+                    if completed[0] % 5 == 0 or completed[0] == len(ocr_jobs):
+                        pct = int((completed[0] / len(ocr_jobs)) * 90)
+                        try:
+                            supabase.table("chapters").update({"status": f"processing_{pct}"}).eq("id", chapter_id).execute()
+                        except:
+                            pass
+                    return result
+            
+            results = await asyncio.gather(*[ocr_worker(img, i) for i, img in enumerate(ocr_jobs)])
+            
+            for i, text in enumerate(results):
+                page_texts[ocr_index_map[i]] = text
+        
+        # ============================================================
+        # BUILD PARAGRAPHS
+        # ============================================================
+        print(f"\n📝 Step 4: Building paragraphs...")
         
         paragraphs = []
         order_idx = 1
         
         for page_idx in range(len(page_texts)):
-            # Add images
             for img in page_images[page_idx]:
                 img["order_index"] = order_idx
                 paragraphs.append(img)
                 order_idx += 1
             
-            # Add tables (as text type for DB compatibility)
             for table_html in page_tables[page_idx]:
                 paragraphs.append({
                     "chapter_id": chapter_id,
@@ -1613,7 +1676,6 @@ async def process_chapter_content(chapter_id: str):
                 })
                 order_idx += 1
             
-            # Add text
             text = page_texts[page_idx]
             if not text or len(text.strip()) < 5:
                 continue
@@ -1656,7 +1718,6 @@ async def process_chapter_content(chapter_id: str):
                 })
                 order_idx += 1
         
-        # Save
         if paragraphs:
             print(f"💾 Saving {len(paragraphs)} items...")
             for i in range(0, len(paragraphs), 100):
@@ -1664,15 +1725,14 @@ async def process_chapter_content(chapter_id: str):
         
         supabase.table("chapters").update({"status": "completed"}).eq("id", chapter_id).execute()
         
-        # Summary
         text_count = len([p for p in paragraphs if p["type"] == "text"])
         image_count = len([p for p in paragraphs if p["type"] == "image"])
         
         print(f"\n{'='*70}")
         print(f"✅ COMPLETE: {chapter_title}")
+        print(f"   Book Type: {book_type.upper()}")
         print(f"   Pages: {total_pages}")
-        print(f"   Text blocks: {text_count}")
-        print(f"   Images: {image_count}")
+        print(f"   Text: {text_count}, Images: {image_count}")
         print(f"{'='*70}")
 
     except Exception as e:

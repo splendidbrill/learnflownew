@@ -18,8 +18,9 @@ import {
   Flame,
   PieChart,
   Clock,
-  FileText,Volume2 ,Play, Pause, Globe,
+  FileText, Volume2, Play, Pause, Globe,
 } from "lucide-react";
+import rehypeRaw from 'rehype-raw';
 import { createClient } from "@/lib/supabase/client";
 import { ScheduleModal } from "../../components/ScheduleModal"; // Ensure this path is correct
 import ReactMarkdown from "react-markdown";
@@ -99,17 +100,17 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   const [activeParagraphId, setActiveParagraphId] = useState<string | null>(
     null,
   );
-  
-  
+
+
 
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  
+
   const [selectedLanguage, setSelectedLanguage] = useState("english"); // Add a dropdown somewhere
-   const [audioLanguage, setAudioLanguage] = useState("english"); // Default
+  const [audioLanguage, setAudioLanguage] = useState("english"); // Default
   const [playingMessageId, setPlayingMessageId] = useState<string | null>(null);
   const [loadingAudioId, setLoadingAudioId] = useState<string | null>(null);
-  
+
 
   const [bookXp, setBookXp] = useState(0);
   const [bookLevelXp, setBookLevelXp] = useState(0);
@@ -141,16 +142,16 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   // Resizable Sidebar State
   const [chatWidth, setChatWidth] = useState(400); // Default width
   const [isResizing, setIsResizing] = useState(false);
-  
-  
-  
-  
+
+
+
+
   // NEW: Tracks which message is currently loaded in the audio player
-  const [currentAudioMessageId, setCurrentAudioMessageId] = useState<string | null>(null); 
-  
+  const [currentAudioMessageId, setCurrentAudioMessageId] = useState<string | null>(null);
+
   // NEW: Tracks which messages have received feedback
   const [feedbackGiven, setFeedbackGiven] = useState<Record<string, 'got_it' | 'confused' | null>>({});
-  
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // --- INITIALIZATION ---
@@ -376,8 +377,8 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     setCurrentAudioMessageId(null);
     setPlayingMessageId(null);
     if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current.currentTime = 0; // Reset time
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0; // Reset time
     }
   }, [audioLanguage]);
 
@@ -511,21 +512,21 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
   const handleScheduleSave = async (time: string, channels: string[], timezone: string) => {
     setIsScheduleModalOpen(false);
-    
+
     const [hour, minute] = time.split(':').map(Number);
-    
+
     try {
       await fetch(`${API_URL}/api/schedule/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-           userId: user?.id,
-           bookId: bookId,
-           chatId: "TEMP_CHAT_ID", // Backend looks up the real ID from profile
-           hour,
-           minute,
-           timezone: timezone,
-           channels: channels
+          userId: user?.id,
+          bookId: bookId,
+          chatId: "TEMP_CHAT_ID", // Backend looks up the real ID from profile
+          hour,
+          minute,
+          timezone: timezone,
+          channels: channels
         })
       });
       console.log("Schedule created");
@@ -535,7 +536,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
     // Only start ingestion if we are in 'create' mode (not editing later)
     if (scheduleMode === 'create') {
-        handleGenerateMap(); 
+      handleGenerateMap();
     }
   };
 
@@ -574,7 +575,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     try {
       // Get current user for saving to DB
       const { data: { user: currentUser } } = await supabase.auth.getUser();
-      
+
       const res = await fetch(`${API_URL}/api/analyze-image`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -603,10 +604,10 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
           imageUrl: para.content,
         },
       ]);
-      
+
       // Set active paragraph so Next Paragraph button appears
       setActiveParagraphId(para.id);
-      
+
       // Save diagram explanation to database so it persists after refresh
       if (currentUser?.id && selectedChapter && data.explanation) {
         console.log("💾 Saving Diagram Explanation to DB...");
@@ -648,13 +649,13 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
           .select("status")
           .eq("id", selectedChapter.id)
           .single();
-        
+
         console.log("📊 Frontend Polling Status:", chapData?.status); // DEBUG LOG
 
         if (chapData?.status && chapData.status.startsWith("processing_")) {
-           const percent = parseInt(chapData.status.split("_")[1]);
-           console.log("   --> Parsed Percent:", percent); // DEBUG LOG
-           if (!isNaN(percent)) setChapterGenProgress(percent);
+          const percent = parseInt(chapData.status.split("_")[1]);
+          console.log("   --> Parsed Percent:", percent); // DEBUG LOG
+          if (!isNaN(percent)) setChapterGenProgress(percent);
         }
 
         // 2. Check if Paragraphs are done (Standard Check)
@@ -666,12 +667,12 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
         // Only stop if explicitly completed OR we have data and status is NOT processing
         const isStillProcessing = chapData?.status?.startsWith("processing");
-        
+
         if (chapData?.status === "completed" || (data && data.length > 5 && !isStillProcessing)) {
-              setParagraphs(data || []);
-              setIsGenerating(false);
-              setChapterGenProgress(0);
-              clearInterval(interval);
+          setParagraphs(data || []);
+          setIsGenerating(false);
+          setChapterGenProgress(0);
+          clearInterval(interval);
         }
       }, 1000); // Poll every 1s for smoother bar
     } catch (e: any) {
@@ -944,12 +945,12 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     if (currentIndex > 0) {
       const prevPara = paragraphs[currentIndex - 1];
       setActiveParagraphId(prevPara.id);
-      
+
       setTimeout(() => {
         const el = document.getElementById(`para-${prevPara.id}`);
         if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
       }, 100);
-      
+
       triggerExplanation(prevPara.id);
     }
   };
@@ -1076,33 +1077,33 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   };
 
   const handleMarkCompleted = async (paraId: string) => {
-      // Optimistic update
-      setParagraphs((prev) =>
-        prev.map((p) => {
-          if (p.id === paraId && !p.is_completed) {
-            // Only increment if not already completed
-            return { ...p, is_completed: true };
-          }
-          return p;
-        })
-      );
-  
-      // Sync with DB
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-           await supabase.from("user_progress").upsert({
-              user_id: user.id,
-              current_block_id: paraId,
-              is_completed: true,
-              last_accessed: new Date().toISOString()
-           });
-           // Re-fetch progress to double check
-           fetchStats(user.id);
+    // Optimistic update
+    setParagraphs((prev) =>
+      prev.map((p) => {
+        if (p.id === paraId && !p.is_completed) {
+          // Only increment if not already completed
+          return { ...p, is_completed: true };
         }
-      } catch (err) {
-          console.error("Error marking completed:", err);
+        return p;
+      })
+    );
+
+    // Sync with DB
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        await supabase.from("user_progress").upsert({
+          user_id: user.id,
+          current_block_id: paraId,
+          is_completed: true,
+          last_accessed: new Date().toISOString()
+        });
+        // Re-fetch progress to double check
+        fetchStats(user.id);
       }
+    } catch (err) {
+      console.error("Error marking completed:", err);
+    }
   };
 
   // --- MISCONCEPTION FEEDBACK HANDLER ---
@@ -1111,7 +1112,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     if (!currentUser?.id) return;
 
     const concept = paragraphs.find(p => p.id === activeParagraphId)?.section_title || "General Concept";
-    
+
     setFeedbackGiven(prev => ({ ...prev, [messageId]: feedbackType }));
 
     try {
@@ -1127,7 +1128,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
             user_interest: book?.analogy_topic || "General",
           }),
         });
-        
+
         // Add to review queue
         await fetch(`${API_URL}/api/reviews/add`, {
           method: "POST",
@@ -1141,7 +1142,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
             failed_explanation: messageContent
           })
         });
-        
+
         console.log("📊 Logged misconception + added to review queue");
       } else {
         await fetch(`${API_URL}/api/misconception/success`, {
@@ -1157,7 +1158,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
         // --- NEW: MARK PARAGRAPH AS COMPLETED ---
         if (activeParagraphId) {
-            handleMarkCompleted(activeParagraphId);
+          handleMarkCompleted(activeParagraphId);
         }
       }
     } catch (e) {
@@ -1254,15 +1255,14 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
           </h1>
           <div className="flex justify-center mt-4">
             <span
-              className={`px-4 py-1.5 rounded-full text-xs font-bold border uppercase ${
-                bookStatus === "completed"
-                  ? "bg-green-500/10 text-green-400 border-green-500/20"
-                  : bookStatus?.startsWith("processing")
-                    ? "bg-blue-500/10 text-blue-400 border-blue-500/20 animate-pulse"
-                    : bookStatus === "failed"
-                      ? "bg-red-500/10 text-red-400 border-red-500/20"
-                      : "bg-gray-800 text-gray-400 border-gray-700"
-              }`}
+              className={`px-4 py-1.5 rounded-full text-xs font-bold border uppercase ${bookStatus === "completed"
+                ? "bg-green-500/10 text-green-400 border-green-500/20"
+                : bookStatus?.startsWith("processing")
+                  ? "bg-blue-500/10 text-blue-400 border-blue-500/20 animate-pulse"
+                  : bookStatus === "failed"
+                    ? "bg-red-500/10 text-red-400 border-red-500/20"
+                    : "bg-gray-800 text-gray-400 border-gray-700"
+                }`}
             >
               {bookStatus}
             </span>
@@ -1274,19 +1274,19 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
         {bookStatus?.startsWith("processing") && (
           <div className="text-center py-20 border-2 border-dashed border-blue-500/30 rounded-3xl bg-blue-500/5 animate-pulse">
             <div className="w-full max-w-md mx-auto px-6">
-                 <div className="flex justify-between text-xs uppercase font-bold text-blue-300 mb-2">
-                   <span>Analyzing Book Structure...</span>
-                   <span>{parseInt(bookStatus.split('_')[1]) || 0}%</span>
-                 </div>
-                 <div className="w-full h-3 bg-blue-500/20 rounded-full overflow-hidden">
-                   <div 
-                       className="h-full bg-gradient-to-r from-blue-400 to-cyan-300 transition-all duration-500 ease-out"
-                       style={{ width: `${parseInt(bookStatus.split('_')[1]) || 0}%` }}
-                   ></div>
-                 </div>
-                 <p className="text-blue-200/60 mt-4 text-sm font-medium">
-                   AI is reading pages and identifying chapters...
-                 </p>
+              <div className="flex justify-between text-xs uppercase font-bold text-blue-300 mb-2">
+                <span>Analyzing Book Structure...</span>
+                <span>{parseInt(bookStatus.split('_')[1]) || 0}%</span>
+              </div>
+              <div className="w-full h-3 bg-blue-500/20 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-blue-400 to-cyan-300 transition-all duration-500 ease-out"
+                  style={{ width: `${parseInt(bookStatus.split('_')[1]) || 0}%` }}
+                ></div>
+              </div>
+              <p className="text-blue-200/60 mt-4 text-sm font-medium">
+                AI is reading pages and identifying chapters...
+              </p>
             </div>
           </div>
         )}
@@ -1398,21 +1398,21 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                 {chapterProgress}% Done
               </p>
             </div>
-            
-             
-             <button
-               onClick={() => {
-                 if (confirm("⚠️ Regenerate this chapter content? This will overwrite existing text.")) {
-                   handleGenerateChapterContent();
-                 }
-               }}
-               className="ml-4 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs px-3 py-1.5 rounded-lg border border-red-500/20 transition-colors flex items-center gap-2"
-               title="Regenerate Content"
-             >
-               <AlertCircle className="w-3 h-3" />
-               Regenerate
-             </button>
-           </div>
+
+
+            <button
+              onClick={() => {
+                if (confirm("⚠️ Regenerate this chapter content? This will overwrite existing text.")) {
+                  handleGenerateChapterContent();
+                }
+              }}
+              className="ml-4 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs px-3 py-1.5 rounded-lg border border-red-500/20 transition-colors flex items-center gap-2"
+              title="Regenerate Content"
+            >
+              <AlertCircle className="w-3 h-3" />
+              Regenerate
+            </button>
+          </div>
           <div className="w-px h-8 bg-white/10"></div>
           <div className="flex items-center gap-3">
             <div className="bg-purple-500/20 p-2 rounded-lg">
@@ -1439,28 +1439,28 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
         {groupedSections.length === 0 && (
           <div className="text-center py-20">
             {isGenerating ? (
-               <div className="w-full max-w-md mx-auto">
-                  <div className="flex justify-between text-xs uppercase font-bold text-purple-300 mb-2">
-                    <span>Generating Chapter Content...</span>
-                    <span>{chapterGenProgress}%</span>
-                  </div>
-                  <div className="w-full h-3 bg-white/10 rounded-full overflow-hidden">
-                    <div 
-                        className="h-full bg-gradient-to-r from-purple-500 to-blue-500 transition-all duration-300 ease-out"
-                        style={{ width: `${chapterGenProgress}%` }}
-                    ></div>
-                  </div>
-                  <p className="text-xs text-gray-500 mt-4 animate-pulse">
-                     Reading pages, finding diagrams, and formatting code...
-                  </p>
-               </div>
+              <div className="w-full max-w-md mx-auto">
+                <div className="flex justify-between text-xs uppercase font-bold text-purple-300 mb-2">
+                  <span>Generating Chapter Content...</span>
+                  <span>{chapterGenProgress}%</span>
+                </div>
+                <div className="w-full h-3 bg-white/10 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-purple-500 to-blue-500 transition-all duration-300 ease-out"
+                    style={{ width: `${chapterGenProgress}%` }}
+                  ></div>
+                </div>
+                <p className="text-xs text-gray-500 mt-4 animate-pulse">
+                  Reading pages, finding diagrams, and formatting code...
+                </p>
+              </div>
             ) : (
-                <button
+              <button
                 onClick={handleGenerateChapterContent}
                 className="px-8 py-3 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold flex items-center justify-center gap-2 mx-auto disabled:opacity-50 transition-all hover:scale-105"
-                >
+              >
                 ✨ Generate Chapter Content
-                </button>
+              </button>
             )}
           </div>
         )}
@@ -1496,18 +1496,17 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                   if (para.type === "image") {
                     // Check if we should show LaTeX for this paragraph
                     const showLatex = showLatexForPara[para.id] ?? !!para.latex_content;
-                    
+
                     return (
                       <div
                         key={para.id}
                         id={`para-${para.id}`}
                         className={`
           flex flex-col items-center p-4 rounded-xl transition-all duration-500 mb-6
-          ${
-            para.is_completed
-              ? "border-2 border-orange-500 bg-orange-500/5"
-              : "border border-white/5 bg-black/20"
-          }
+          ${para.is_completed
+                            ? "border-2 border-orange-500 bg-orange-500/5"
+                            : "border border-white/5 bg-black/20"
+                          }
           ${activeParagraphId === para.id ? "ring-2 ring-purple-500 shadow-lg shadow-purple-900/20" : ""}
         `}
                       >
@@ -1529,9 +1528,14 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                               </button>
                             </div>
                             <div className="p-6 overflow-x-auto">
+                              {para.content.startsWith('<div') && (
+                                <pre className="text-xs bg-black p-2 mb-2 overflow-auto">
+                                  {para.content.substring(0, 200)}
+                                </pre>
+                              )}
                               <ReactMarkdown
                                 remarkPlugins={[remarkMath]}
-                                rehypePlugins={[rehypeKatex]}
+                                rehypePlugins={[rehypeKatex, rehypeRaw]}
                               >
                                 {para.latex_content}
                               </ReactMarkdown>
@@ -1554,7 +1558,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                             )}
                           </div>
                         )}
-                        
+
                         {para.explanation ? (
                           <div className="mt-4 w-full bg-blue-900/20 border-l-4 border-cyan-400 p-4 rounded-r-lg text-sm text-gray-200">
                             <strong className="text-cyan-400 block mb-1 text-xs">
@@ -1582,61 +1586,66 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                   return (
                     <div
                       key={para.id}
-                      id={`para-${para.id}`} // <--- ADD THIS ID FOR SCROLLING
+                      id={`para-${para.id}`}
                       className={`
-        text-gray-300 leading-relaxed p-6 rounded-xl transition-all duration-500 mb-4
-        ${
-          para.is_completed
-            ? "border-2 border-orange-500 bg-orange-500/5 text-gray-400" // <--- ORANGE OUTLINE
-            : "bg-white/5 border border-transparent"
-        }
-        ${
-          activeParagraphId === para.id
-            ? "bg-purple-900/30 border-l-4 border-l-purple-400 ring-1 ring-purple-500/50 shadow-[0_0_20px_rgba(168,85,247,0.15)] transform scale-[1.01]"
-            : ""
-        }
-      `}
+    text-gray-300 leading-relaxed p-6 rounded-xl transition-all duration-500 mb-4
+    ${para.is_completed
+                          ? "border-2 border-orange-500 bg-orange-500/5 text-gray-400"
+                          : "bg-white/5 border border-transparent"
+                        }
+    ${activeParagraphId === para.id
+                          ? "bg-purple-900/30 border-l-4 border-l-purple-400 ring-1 ring-purple-500/50 shadow-[0_0_20px_rgba(168,85,247,0.15)] transform scale-[1.01]"
+                          : ""
+                        }
+  `}
                     >
-                      <ReactMarkdown
-                        remarkPlugins={[remarkMath]}
-                        rehypePlugins={[rehypeKatex]}
-                        components={{
-                          p: ({ node, children }) => (
-                            <p className="mb-4 text-gray-300 leading-relaxed">{children}</p>
-                          ),
-                          code(props: any) {
-                            const { node, inline, className, children, ...rest } = props;
-                            const match = /language-(\w+)/.exec(className || "");
-                            const isBlock = !inline;
-                            
-                            return isBlock ? (
-                              <div className="relative group my-6 bg-[#1E1E2E] rounded-xl border border-white/10 overflow-hidden shadow-xl max-w-full">
-                                 <div className="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
-                                   <div className="flex gap-1.5">
-                                     <div className="w-3 h-3 rounded-full bg-red-500/20" />
-                                     <div className="w-3 h-3 rounded-full bg-yellow-500/20" />
-                                     <div className="w-3 h-3 rounded-full bg-green-500/20" />
-                                   </div>
-                                   <span className="text-xs font-mono font-medium text-gray-400 capitalize">
+                      {para.content.trim().startsWith('<div') || para.content.trim().startsWith('<table') ? (
+                        <div
+                          className="prose prose-invert max-w-none [&_table]:bg-[#1a1a2e] [&_th]:bg-[#1F4E79] [&_th]:text-white [&_td]:text-gray-200 [&_tr:nth-child(even)_td]:bg-[#252540] [&_tr:nth-child(odd)_td]:bg-[#1a1a2e] [&_td]:border-[#444]"
+                          dangerouslySetInnerHTML={{ __html: para.content }}
+                        />
+                      ) : (
+                        <ReactMarkdown
+                          remarkPlugins={[remarkMath]}
+                          rehypePlugins={[rehypeKatex]}
+                          components={{
+                            p: ({ node, children }) => (
+                              <p className="mb-4 text-gray-300 leading-relaxed">{children}</p>
+                            ),
+                            code(props: any) {
+                              const { node, inline, className, children, ...rest } = props;
+                              const match = /language-(\w+)/.exec(className || "");
+                              const isBlock = !inline;
+
+                              return isBlock ? (
+                                <div className="relative group my-6 bg-[#1E1E2E] rounded-xl border border-white/10 overflow-hidden shadow-xl max-w-full">
+                                  <div className="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/5">
+                                    <div className="flex gap-1.5">
+                                      <div className="w-3 h-3 rounded-full bg-red-500/20" />
+                                      <div className="w-3 h-3 rounded-full bg-yellow-500/20" />
+                                      <div className="w-3 h-3 rounded-full bg-green-500/20" />
+                                    </div>
+                                    <span className="text-xs font-mono font-medium text-gray-400 capitalize">
                                       {match ? match[1] : 'text'}
-                                   </span>
-                                 </div>
-                                 <div className="p-4 overflow-x-auto w-full">
+                                    </span>
+                                  </div>
+                                  <div className="p-4 overflow-x-auto w-full">
                                     <code className={`${className} font-mono text-sm whitespace-pre-wrap break-words block text-gray-300`} {...rest}>
                                       {children}
                                     </code>
-                                 </div>
-                              </div>
-                            ) : (
-                              <code className="px-1.5 py-0.5 bg-purple-500/20 rounded text-purple-200 text-sm font-mono whitespace-pre-wrap break-words" {...rest}>
-                                {children}
-                              </code>
-                            );
-                          },
-                        }}
-                      >
-                        {para.content}
-                      </ReactMarkdown>
+                                  </div>
+                                </div>
+                              ) : (
+                                <code className="px-1.5 py-0.5 bg-purple-500/20 rounded text-purple-200 text-sm font-mono whitespace-pre-wrap break-words" {...rest}>
+                                  {children}
+                                </code>
+                              );
+                            },
+                          }}
+                        >
+                          {para.content}
+                        </ReactMarkdown>
+                      )}
                     </div>
                   );
                 })}
@@ -1678,7 +1687,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     }
   };
 
-    const handleToggleAudio = async (messageId: string, text: string) => {
+  const handleToggleAudio = async (messageId: string, text: string) => {
     // 1. If currently playing THIS message -> PAUSE
     if (playingMessageId === messageId) {
       audioRef.current?.pause();
@@ -1718,7 +1727,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
       // 4. Play Audio
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
-      
+
       if (audioRef.current) {
         audioRef.current.src = url;
         audioRef.current.play();
@@ -1766,13 +1775,12 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                 window.history.pushState(null, "", `?chapterId=${chapter.id}`);
               }}
               className={`w-full text-left p-3 rounded-xl text-sm mb-2 transition-all duration-300 relative overflow-hidden group
-      ${
-        selectedChapter?.id === chapter.id
-          ? // ACTIVE STATE: Cyan Ring + Glow + Subtle Background
-            "text-white bg-white/5 ring-1 ring-cyan-400 shadow-[0_0_15px_rgba(34,211,238,0.15)]"
-          : // INACTIVE STATE
-            "text-gray-400 hover:bg-white/5 hover:text-white border border-transparent"
-      }
+      ${selectedChapter?.id === chapter.id
+                  ? // ACTIVE STATE: Cyan Ring + Glow + Subtle Background
+                  "text-white bg-white/5 ring-1 ring-cyan-400 shadow-[0_0_15px_rgba(34,211,238,0.15)]"
+                  : // INACTIVE STATE
+                  "text-gray-400 hover:bg-white/5 hover:text-white border border-transparent"
+                }
     `}
             >
               <span className="mr-2 font-mono text-xs opacity-50">
@@ -1790,11 +1798,10 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                 <button
                   onClick={() => router.push(`/dashboard/book/${bookId}/test`)}
                   disabled={completedParagraphsCount < 5}
-                  className={`w-full p-3 rounded-xl flex items-center justify-center gap-2 text-sm font-bold transition ${
-                    completedParagraphsCount >= 5
-                      ? "bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500"
-                      : "bg-gray-600/50 cursor-not-allowed opacity-60"
-                  }`}
+                  className={`w-full p-3 rounded-xl flex items-center justify-center gap-2 text-sm font-bold transition ${completedParagraphsCount >= 5
+                    ? "bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500"
+                    : "bg-gray-600/50 cursor-not-allowed opacity-60"
+                    }`}
                   title={
                     completedParagraphsCount < 5
                       ? `Complete ${5 - completedParagraphsCount} more paragraph(s) to unlock tests (${completedParagraphsCount}/5)`
@@ -1857,18 +1864,18 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
             <MessageSquare className="w-4 h-4 text-purple-400" /> AI Tutor
           </h2>
           <div className="flex items-center gap-2 bg-black/20 rounded-lg px-2 py-1 border border-white/10">
-              <Globe className="w-3 h-3 text-gray-400" />
-              <select 
-                value={audioLanguage}
-                onChange={(e) => setAudioLanguage(e.target.value)}
-                className="bg-transparent text-xs text-gray-300 outline-none cursor-pointer uppercase font-bold"
-              >
-                <option value="english">English</option>
-                <option value="hindi">Hindi</option>
-                <option value="spanish">Spanish</option>
-                <option value="chinese">Chinese</option>
-              </select>
-            </div>
+            <Globe className="w-3 h-3 text-gray-400" />
+            <select
+              value={audioLanguage}
+              onChange={(e) => setAudioLanguage(e.target.value)}
+              className="bg-transparent text-xs text-gray-300 outline-none cursor-pointer uppercase font-bold"
+            >
+              <option value="english">English</option>
+              <option value="hindi">Hindi</option>
+              <option value="spanish">Spanish</option>
+              <option value="chinese">Chinese</option>
+            </select>
+          </div>
 
         </div>
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -1878,11 +1885,10 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
               className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
             >
               <div
-                className={`max-w-[85%] p-3 rounded-2xl text-sm ${
-                  m.role === "user" 
-                    ? "bg-purple-600 text-white rounded-br-none" 
-                    : "bg-[#1e0a3c] border border-white/10 text-gray-200 rounded-bl-none"
-                }`}
+                className={`max-w-[85%] p-3 rounded-2xl text-sm ${m.role === "user"
+                  ? "bg-purple-600 text-white rounded-br-none"
+                  : "bg-[#1e0a3c] border border-white/10 text-gray-200 rounded-bl-none"
+                  }`}
               >
                 {/* 1. Image (if any) */}
                 {m.imageUrl && (
@@ -1898,40 +1904,40 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
                 {/* 3. NEW AUDIO CONTROLS (Replace old button with this) */}
                 {m.role === 'assistant' && (
-                    <div className="mt-3 flex items-center gap-2 border-t border-white/5 pt-2">
-                      <button 
-                        onClick={() => handleToggleAudio(m.id, m.content)}
-                        disabled={loadingAudioId === m.id}
-                        className={`
+                  <div className="mt-3 flex items-center gap-2 border-t border-white/5 pt-2">
+                    <button
+                      onClick={() => handleToggleAudio(m.id, m.content)}
+                      disabled={loadingAudioId === m.id}
+                      className={`
                           flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all
-                          ${playingMessageId === m.id 
-                            ? 'bg-purple-500 text-white shadow-[0_0_10px_rgba(168,85,247,0.4)]' 
-                            : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'}
+                          ${playingMessageId === m.id
+                          ? 'bg-purple-500 text-white shadow-[0_0_10px_rgba(168,85,247,0.4)]'
+                          : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'}
                         `}
-                      >
-                        {/* Dynamic Icon Logic */}
-                        {loadingAudioId === m.id ? (
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                        ) : playingMessageId === m.id ? (
-                          <Pause className="w-3 h-3 fill-current" />
-                        ) : (
-                          <Play className="w-3 h-3 fill-current" />
-                        )}
-                        
-                        <span>
-                          {loadingAudioId === m.id ? "Loading..." : playingMessageId === m.id ? "Pause" : "Listen"}
-                        </span>
-                      </button>
-                      
-                      {/* Playing Status Indicator */}
-                      {playingMessageId === m.id && (
-                         <span className="text-[10px] text-purple-300 capitalize animate-in fade-in">
-                           Playing in {audioLanguage}
-                         </span>
+                    >
+                      {/* Dynamic Icon Logic */}
+                      {loadingAudioId === m.id ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : playingMessageId === m.id ? (
+                        <Pause className="w-3 h-3 fill-current" />
+                      ) : (
+                        <Play className="w-3 h-3 fill-current" />
                       )}
-                    </div>
+
+                      <span>
+                        {loadingAudioId === m.id ? "Loading..." : playingMessageId === m.id ? "Pause" : "Listen"}
+                      </span>
+                    </button>
+
+                    {/* Playing Status Indicator */}
+                    {playingMessageId === m.id && (
+                      <span className="text-[10px] text-purple-300 capitalize animate-in fade-in">
+                        Playing in {audioLanguage}
+                      </span>
+                    )}
+                  </div>
                 )}
-                
+
                 {/* 4. FEEDBACK BUTTONS (Misconception Tracking) */}
                 {m.role === 'assistant' && m.content && (
                   <div className="mt-2 flex items-center gap-2 border-t border-white/5 pt-2">
@@ -1987,11 +1993,11 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                   Next Paragraph <ChevronRight className="w-3 h-3" />
                 </button>
                 <button className="ml-auto mb-2 bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-2 transition-all" onClick={handlePreviousParagraph}>
-  ← Previous
-</button>
-<button className="ml-auto bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-2 transition-all" onClick={handleSkipParagraph}>
-  Skip the next paragraph →
-</button>
+                  ← Previous
+                </button>
+                <button className="ml-auto bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-2 transition-all" onClick={handleSkipParagraph}>
+                  Skip the next paragraph →
+                </button>
               </div>
             </div>
           )}
@@ -2017,14 +2023,14 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
           </form>
         </div>
       </div>
-      <audio 
-  ref={audioRef} 
-  onEnded={() => setIsPlaying(false)} 
-  onError={() => setIsPlaying(false)}
-/>
-<audio ref={audioRef} className="hidden" />
-{user && (
-        <ScheduleModal 
+      <audio
+        ref={audioRef}
+        onEnded={() => setIsPlaying(false)}
+        onError={() => setIsPlaying(false)}
+      />
+      <audio ref={audioRef} className="hidden" />
+      {user && (
+        <ScheduleModal
           isOpen={isScheduleModalOpen}
           onClose={() => setIsScheduleModalOpen(false)}
           onSave={handleScheduleSave}

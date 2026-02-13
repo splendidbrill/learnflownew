@@ -155,8 +155,8 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
         fileUrl = urlData.publicUrl;
       }
 
-      // COMBINE: Domain + Analogy
-      const finalAnalogyTopic = `${domain} ${analogyTopic}`.trim();
+      // DO NOT COMBINE: Domain + Analogy (User requested separation)
+      const finalAnalogyTopic = analogyTopic.trim();
 
       const bookData = {
         title,
