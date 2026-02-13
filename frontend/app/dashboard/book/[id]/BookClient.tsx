@@ -1398,7 +1398,21 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                 {chapterProgress}% Done
               </p>
             </div>
-          </div>
+            
+             
+             <button
+               onClick={() => {
+                 if (confirm("⚠️ Regenerate this chapter content? This will overwrite existing text.")) {
+                   handleGenerateChapterContent();
+                 }
+               }}
+               className="ml-4 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs px-3 py-1.5 rounded-lg border border-red-500/20 transition-colors flex items-center gap-2"
+               title="Regenerate Content"
+             >
+               <AlertCircle className="w-3 h-3" />
+               Regenerate
+             </button>
+           </div>
           <div className="w-px h-8 bg-white/10"></div>
           <div className="flex items-center gap-3">
             <div className="bg-purple-500/20 p-2 rounded-lg">

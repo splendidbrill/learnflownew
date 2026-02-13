@@ -27,7 +27,8 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
   // --- STATE DEFINITIONS ---
   const [title, setTitle] = useState('');
   const [author, setAuthor] = useState('');
-  const [description, setDescription] = useState('');
+  // const [description, setDescription] = useState(''); // REMOVED
+  const [domain, setDomain] = useState('');
   const [analogyTopic, setAnalogyTopic] = useState('');
   const [file, setFile] = useState<File | null>(null);
   
@@ -38,13 +39,13 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
     if (isOpen && initialData) {
       setTitle(initialData.title);
       setAuthor(initialData.author || '');
-      setDescription(initialData.description || '');
-      // If you have analogy_topic in your Book type, map it here too
+      setDomain(''); // Default empty or try to parse?
+      setAnalogyTopic(initialData.analogy_topic || '');
     } else if (isOpen) {
       // Reset form on open
       setTitle('');
       setAuthor('');
-      setDescription('');
+      setDomain('');
       setAnalogyTopic('');
       setFile(null);
       setProgress(0);
@@ -127,6 +128,10 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
       alert("Please select a file");
       return;
     }
+    if (!domain) {
+      alert("Please select a Book Domain (e.g. Science, Math)");
+      return;
+    }
 
     setIsLoading(true);
     setProgress(0); // Reset
@@ -150,14 +155,17 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
         fileUrl = urlData.publicUrl;
       }
 
+      // COMBINE: Domain + Analogy
+      const finalAnalogyTopic = `${domain} ${analogyTopic}`.trim();
+
       const bookData = {
         title,
         author,
-        description,
-        subject_id: subjectId, // Links to the Course ID
+        description: domain, // Use domain as description for cards
+        subject_id: subjectId, 
         user_id: user.id,
         file_url: fileUrl,
-        analogy_topic: analogyTopic 
+        analogy_topic: finalAnalogyTopic 
       };
 
       let resultBook;
@@ -190,6 +198,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
         description: resultBook.description,
         color: '#fbbf24', 
         fileUrl: resultBook.file_url,
+        analogy_topic: resultBook.analogy_topic
       };
 
       onAdd(newBook);
@@ -273,24 +282,35 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
               </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-300">Description</label>
-              <textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                rows={3}
-                className="w-full bg-black/20 border border-white/10 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 resize-none"
-                placeholder="Brief summary or notes..."
-              />
+            {/* DOMAIN SELECTION (Replaces Description) */}
+            <div className="space-y-3">
+              <label className="text-sm font-medium text-gray-300">Book Domain <span className="text-red-400">*</span></label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {['Science', 'Math', 'Computer Science', 'History', 'Geography', 'Political Science', 'Literature', 'Self Help', 'Others'].map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => setDomain(d)}
+                    className={`px-3 py-2 rounded-lg text-sm font-medium transition-all border ${
+                      domain === d 
+                        ? 'bg-purple-600 border-purple-500 text-white shadow-lg shadow-purple-900/40 transform scale-105' 
+                        : 'bg-white/5 border-white/10 text-gray-400 hover:bg-white/10 hover:text-white'
+                    }`}
+                  >
+                    {d}
+                  </button>
+                ))}
+              </div>
+              {!domain && <p className="text-xs text-red-400/80 mt-1">Please select a domain to enable smart features.</p>}
             </div>
 
             <div className="space-y-2">
               <label className="text-sm font-medium text-gray-300 flex items-center gap-2">
-                Analogy Topic
+                Teaching Analogy (Optional)
                 <div className="group relative">
                   <AlertCircle className="w-4 h-4 text-purple-400 cursor-help" />
                   <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 px-3 py-1 bg-gray-900 text-xs text-white rounded opacity-0 group-hover:opacity-100 transition-opacity w-48 text-center pointer-events-none">
-                    AI will use this topic to explain concepts (e.g., 'Football', 'Cooking')
+                    AI will explain concepts using this analogy (e.g., 'Football', 'Cooking')
                   </div>
                 </div>
               </label>

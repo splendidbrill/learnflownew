@@ -1,9 +1,12 @@
 import os
 import fitz # PyMuPDF
 import re
+import io
 import json
 import hashlib
 import httpx
+import pdfplumber
+
 from pathlib import Path
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +15,9 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from fastapi.responses import FileResponse
 from services.tts_service import generate_audio
-
+from typing import List, Optional
+import asyncio
+from PIL import Image
 
 # --- IMPORTS ---
 from langchain_openai import ChatOpenAI 
@@ -75,6 +80,15 @@ async def set_telegram_webhook():
         except: pass
 
 # --- MODELS ---
+# Example - your file should have something like this:
+class ChatRequest(BaseModel):
+    message: str
+    # ... other fields
+
+class TTSRequest(BaseModel):
+    text: str
+    language: str = "english"
+
 class IngestRequest(BaseModel):
     bookId: str
     fileUrl: str
@@ -109,6 +123,289 @@ class MermaidRequest(BaseModel):
 # --- ENDPOINTS ---
 
 # 📊 MERMAID DIAGRAM GENERATION
+
+
+def extract_chapter_number(title: str) -> Optional[int]:
+    match = re.search(r'chapter\s*(\d+)', title, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    match = re.search(r'^(\d+)[\s:.\-]', title.strip())
+    if match:
+        return int(match.group(1))
+    return None
+
+def generate_title_variants(title: str) -> List[str]:
+    """Generate search patterns for various title formats."""
+    variants = [title.lower()]
+    
+    # Without chapter number prefix
+    clean_title = re.sub(r'^(chapter|unit|part)\s*\d+[:\s\-]*', '', title, flags=re.IGNORECASE).strip()
+    if clean_title and clean_title.lower() not in variants:
+        variants.append(clean_title.lower())
+    
+    # Without punctuation
+    no_punct = re.sub(r'[^\w\s]', '', title.lower())
+    if no_punct not in variants:
+        variants.append(no_punct)
+    
+    # Chapter number variants
+    ch_num = extract_chapter_number(title)
+    if ch_num:
+        variants.extend([
+            f"chapter {ch_num}",
+            f"chapter{ch_num}",
+            f"ch {ch_num}",
+            f"ch.{ch_num}",
+            f"unit {ch_num}",
+            f"part {ch_num}",
+        ])
+    
+    return [v for v in variants if len(v) > 2]
+
+
+def find_chapter_start_robust(doc, chapter_title: str, chapter_number: Optional[int],
+                               expected_page: int, search_range: int = 40) -> int:
+    """
+    Robust chapter start detection using multiple strategies.
+    Returns 0-indexed page number.
+    """
+    title_variants = generate_title_variants(chapter_title)
+    
+    # Search in expanding circles from expected page
+    search_start = max(0, expected_page - search_range)
+    search_end = min(len(doc), expected_page + search_range)
+    
+    # Strategy scores
+    candidates = []
+    
+    for page_idx in range(search_start, search_end):
+        page = doc[page_idx]
+        blocks = page.get_text("dict")["blocks"]
+        page_text = page.get_text()
+        page_text_lower = page_text.lower()
+        
+        best_score = 0
+        best_match = ""
+        
+        for b in blocks:
+            if b["type"] != 0:
+                continue
+            
+            for line in b["lines"]:
+                line_text = " ".join([s["text"] for s in line["spans"]])
+                max_size = max([s["size"] for s in line["spans"]])
+                line_lower = line_text.lower()
+                
+                # Score based on multiple factors
+                score = 0
+                
+                # Factor 1: Large font (chapter headers are usually 20pt+)
+                if max_size > 40:
+                    score += 50
+                elif max_size > 30:
+                    score += 30
+                elif max_size > 20:
+                    score += 15
+                
+                # Factor 2: Chapter number match
+                if chapter_number is not None:
+                    nums = re.findall(r'\d+', line_text)
+                    if nums and int(nums[0]) == chapter_number:
+                        score += 40
+                        # Bonus for standalone number
+                        if len(nums) == 1 and len(line_text.strip()) < 10:
+                            score += 30
+                
+                # Factor 3: Title match
+                for variant in title_variants:
+                    if variant in line_lower:
+                        # Exact match bonus
+                        if line_lower.strip() == variant.strip():
+                            score += 30
+                        else:
+                            score += 15
+                        break
+                
+                # Factor 4: Position on page (headers are at top)
+                # Get y-position of this line
+                y_pos = line["bbox"][1]  # Top y-coordinate
+                page_height = page.rect.height
+                if y_pos < page_height * 0.3:  # Top 30% of page
+                    score += 10
+                
+                # Factor 5: Clean line (headers are usually short)
+                if len(line_text.strip()) < 60:
+                    score += 5
+                
+                # Factor 6: Chapter keyword
+                if "chapter" in line_lower or "unit" in line_lower or "part" in line_lower:
+                    score += 10
+                
+                if score > best_score:
+                    best_score = score
+                    best_match = line_text[:50]
+        
+        if best_score > 50:  # Threshold for potential match
+            # Distance penalty (prefer pages closer to expected)
+            distance = abs(page_idx - expected_page)
+            adjusted_score = best_score - distance * 0.5
+            candidates.append((page_idx, adjusted_score, best_match))
+    
+    if candidates:
+        # Sort by score
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_page, best_score, best_match = candidates[0]
+        print(f"   Found at page {best_page + 1} (score: {best_score:.0f}): '{best_match}...'")
+        return best_page
+    
+    # Fallback: Search for title in text
+    print(f"   Fallback: Searching for title in text...")
+    for page_idx in range(search_start, search_end):
+        page_text = doc[page_idx].get_text().lower()
+        for variant in title_variants:
+            if len(variant) > 5 and variant in page_text:
+                print(f"   Found title variant in text at page {page_idx + 1}")
+                return page_idx
+    
+    # Last resort: return expected page
+    print(f"   Could not find chapter start, using expected page {expected_page + 1}")
+    return expected_page
+
+def find_chapter_end_robust(doc, chapter_start: int, chapter_title: str, 
+                            chapter_number: Optional[int], next_chapter_start: Optional[int] = None) -> int:
+    """
+    Find chapter end using multiple strategies.
+    Returns 0-indexed page number (exclusive).
+    """
+    # Strategy 1: Use next chapter start if provided
+    if next_chapter_start is not None and next_chapter_start > chapter_start:
+        # Validate that next_chapter_start doesn't have current chapter content
+        next_page_text = doc[next_chapter_start].get_text().lower()
+        
+        # Check if this looks like next chapter
+        next_ch_num = chapter_number + 1 if chapter_number else None
+        if next_ch_num:
+            if f"chapter {next_ch_num}" in next_page_text or f"chapter{next_ch_num}" in next_page_text:
+                print(f"   End: Next chapter confirmed at page {next_chapter_start + 1}")
+                return next_chapter_start
+        
+        # Even without confirmation, trust it
+        return next_chapter_start
+    
+    # Strategy 2: Search for end-of-chapter markers
+    print("   Searching for chapter end markers...")
+    
+    end_markers = [
+        "what you have learnt",
+        "exercises",
+        "summary",
+        "review questions",
+        "key terms",
+        "chapter review",
+        "problems",
+        "practice questions",
+    ]
+    
+    for page_idx in range(chapter_start + 3, min(chapter_start + 50, len(doc))):
+        page_text = doc[page_idx].get_text().lower()
+        
+        # Check for end markers
+        marker_count = sum(1 for marker in end_markers if marker in page_text)
+        
+        if marker_count >= 2:
+            # Check if next page starts a new chapter
+            if page_idx + 1 < len(doc):
+                next_text = doc[page_idx + 1].get_text().lower()
+                
+                # Look for chapter indicators
+                if re.search(r'chapter\s*\d+', next_text[:500]):
+                    print(f"   End: Found exercises + next chapter indicator at page {page_idx + 1}")
+                    return page_idx + 1
+                
+                # Look for large font at top of next page (new section/chapter)
+                next_blocks = doc[page_idx + 1].get_text("dict")["blocks"]
+                for b in next_blocks:
+                    if b["type"] == 0:
+                        for line in b["lines"]:
+                            max_size = max([s["size"] for s in line["spans"]])
+                            if max_size > 30:
+                                print(f"   End: Found next chapter header at page {page_idx + 2}")
+                                return page_idx + 1
+            
+            # This page has end markers, likely chapter ends here or next
+            print(f"   End: Found end markers at page {page_idx + 1}")
+            return page_idx + 1
+    
+    # Strategy 3: Search for next chapter number
+    if chapter_number is not None:
+        next_ch_num = chapter_number + 1
+        for page_idx in range(chapter_start + 5, min(chapter_start + 60, len(doc))):
+            page_text = doc[page_idx].get_text().lower()
+            
+            # Look for next chapter number
+            patterns = [f"chapter {next_ch_num}", f"chapter{next_ch_num}", f"ch {next_ch_num}"]
+            for pattern in patterns:
+                if pattern in page_text[:1000]:  # Check first part of page
+                    # Verify it's a header, not a reference
+                    blocks = doc[page_idx].get_text("dict")["blocks"]
+                    for b in blocks:
+                        if b["type"] == 0:
+                            for line in b["lines"]:
+                                line_text = " ".join([s["text"] for s in line["spans"]]).lower()
+                                max_size = max([s["size"] for s in line["spans"]])
+                                if pattern in line_text and max_size > 20:
+                                    print(f"   End: Found Chapter {next_ch_num} at page {page_idx + 1}")
+                                    return page_idx
+    
+    # Fallback: Return a reasonable range (20 pages)
+    return min(chapter_start + 20, len(doc))
+
+
+def validate_chapter_content(page_texts: List[str], chapter_title: str, 
+                             chapter_number: Optional[int]) -> tuple[int, int]:
+    """
+    Validate and adjust chapter boundaries after OCR.
+    Returns (start_page_idx, end_page_idx) to keep.
+    """
+    if not page_texts:
+        return (0, 0)
+    
+    # Check first 2 pages for previous chapter overlap
+    start_idx = 0
+    prev_ch_num = chapter_number - 1 if chapter_number and chapter_number > 1 else None
+    
+    for i in range(min(2, len(page_texts))):
+        text = (page_texts[i] or "").lower()
+        
+        if prev_ch_num:
+            # Check for previous chapter end markers
+            has_exercises = "exercises" in text[-600:] if len(text) > 600 else "exercises" in text
+            has_prev_ch = f"chapter {prev_ch_num}" in text
+            has_summary = "what you have learnt" in text or "summary" in text
+            
+            # Only skip if strong indicators
+            if (has_exercises or has_summary) and has_prev_ch:
+                print(f"   Skipping page {i}: previous chapter content")
+                start_idx = i + 1
+    
+    # Check last pages for next chapter start (if we have many pages)
+    end_idx = len(page_texts)
+    if len(page_texts) > 5 and chapter_number:
+        next_ch_num = chapter_number + 1
+        for i in range(len(page_texts) - 1, max(start_idx + 3, len(page_texts) - 4), -1):
+            text = (page_texts[i] or "").lower()
+            
+            # Check for next chapter start
+            if f"chapter {next_ch_num}" in text[:500]:
+                # Check if it's a header or reference
+                if "in chapter" not in text[:500]:  # Not a reference
+                    print(f"   Trimming page {i}: next chapter start detected")
+                    end_idx = i
+                    break
+    
+    return (start_idx, end_idx)
+
+
 @app.post("/api/generate-diagram")
 async def generate_diagram_endpoint(req: MermaidRequest):
     """Generate a Mermaid.js diagram from educational content"""
@@ -344,118 +641,133 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
         chapters_to_save = []
         pdf_offset = 0
 
-        # --- SMART OFFSET CALIBRATION (UPDATED) ---
+        # --- MULTI-POINT OFFSET CALIBRATION ---
         if len(toc) > 0:
-            # Report Progress for TOC Path
             try:
                 supabase.table("course_books").update({"status": "processing_20"}).eq("id", book_id).execute()
             except: pass
 
-            # 1. Find a valid target chapter (avoid 'Contents' or 'Preface')
-            valid_chapters = [t for t in toc if t[0] == 1 and "content" not in t[1].lower()]
+            # Get valid chapters (exclude contents, preface, etc.)
+            exclude_keywords = ['content', 'preface', 'foreword', 'index', 'appendix', 'glossary', 'bibliography']
+            valid_chapters = [t for t in toc if t[0] == 1 and 
+                            not any(kw in t[1].lower() for kw in exclude_keywords)]
             
-            if valid_chapters:
-                target_chap = valid_chapters[0]
-                search_title = target_chap[1].split(":")[0].strip() # e.g. "Chapter 3"
-                printed_page = target_chap[2]
+            # Sample MULTIPLE chapters for accurate offset
+            offsets_found = []
+            total_valid = len(valid_chapters)
+            
+            if total_valid > 0:
+                # Sample positions: beginning, middle, end
+                sample_positions = [0]
+                if total_valid > 2:
+                    sample_positions.append(total_valid // 2)
+                if total_valid > 4:
+                    sample_positions.append(total_valid - 1)
                 
-                print(f"🔎 Calibrating Offset using: {search_title} (Meta Pg: {printed_page})")
-                
-                # Search +/- 20 pages
-                start_search = max(0, printed_page - 20)
-                end_search = min(len(doc), printed_page + 20)
-                
-                # Report Calibration Start
-                try: 
+                try:
                     supabase.table("course_books").update({"status": "processing_40"}).eq("id", book_id).execute()
                 except: pass
                 
-                found_true_page = -1
-                
-                for i in range(start_search, end_search):
-                    page = doc[i]
-                    blocks = page.get_text("dict")["blocks"]
+                for pos in sample_positions[:5]:
+                    target_chap = valid_chapters[pos]
+                    search_title = target_chap[1].split(":")[0].strip()
+                    printed_page = target_chap[2]
                     
-                    # SCAN BLOCKS FOR LARGE TEXT MATCH
-                    for b in blocks:
-                        if b["type"] == 0: # Text block
-                            for line in b["lines"]:
-                                for span in line["spans"]:
-                                    text = span["text"].strip()
-                                    size = span["size"]
-                                    
-                                    # CRITICAL FIX: Only accept if font size > 12 (Heuristic for Headers)
-                                    # And check if it matches the title
-                                    if search_title.lower() in text.lower() and size > 12:
-                                        print(f"   FOUND MATCH on Pg {i+1}: '{text}' (Size: {size})")
-                                        found_true_page = i + 1
-                                        break
+                    print(f"🔎 Calibrating with: {search_title} (Printed Pg: {printed_page})")
+                    
+                    start_search = max(0, printed_page - 25)
+                    end_search = min(len(doc), printed_page + 25)
+                    
+                    ch_num = extract_chapter_number(target_chap[1])
+                    title_variants = generate_title_variants(target_chap[1])
+                    
+                    found_true_page = -1
+                    
+                    for i in range(start_search, end_search):
+                        page = doc[i]
+                        blocks = page.get_text("dict")["blocks"]
+                        
+                        for b in blocks:
+                            if b["type"] == 0:
+                                for line in b["lines"]:
+                                    for span in line["spans"]:
+                                        text = span["text"].strip().lower()
+                                        size = span["size"]
+                                        
+                                        # Match chapter number pattern (most reliable)
+                                        if ch_num and size > 12:
+                                            patterns = [f"chapter {ch_num}", f"chapter{ch_num}"]
+                                            if any(p in text for p in patterns):
+                                                print(f"   ✅ Found 'Chapter {ch_num}' on PDF page {i+1}")
+                                                found_true_page = i + 1
+                                                break
+                                        
+                                        # Fallback: Match title variants
+                                        if found_true_page == -1 and size > 12:
+                                            for variant in title_variants:
+                                                if len(variant) > 5 and variant in text:
+                                                    print(f"   ✅ Found '{variant}' on PDF page {i+1}")
+                                                    found_true_page = i + 1
+                                                    break
+                                    if found_true_page != -1: break
                                 if found_true_page != -1: break
+                            if found_true_page != -1: break
                         if found_true_page != -1: break
-                    if found_true_page != -1: break
+                    
+                    if found_true_page != -1:
+                        offset = found_true_page - printed_page
+                        offsets_found.append(offset)
+                        print(f"   📐 Offset: {offset}")
                 
-                if found_true_page != -1:
-                    pdf_offset = found_true_page - printed_page
-                    print(f"🎯 Offset Detected: {pdf_offset} (True Page: {found_true_page})")
+                # Use MEDIAN offset for robustness
+                if offsets_found:
+                    offsets_found.sort()
+                    pdf_offset = offsets_found[len(offsets_found) // 2]
+                    print(f"🎯 Final Offset (median of {len(offsets_found)}): {pdf_offset}")
                 else:
-                    print("⚠️ Could not verify offset with large text. Using Metadata raw.")
-        
-        # Report Almost Done
+                    print("⚠️ Could not calibrate offset, using raw TOC")
+                    pdf_offset = 0
+
         try:
-             supabase.table("course_books").update({"status": "processing_80"}).eq("id", book_id).execute()
+            supabase.table("course_books").update({"status": "processing_80"}).eq("id", book_id).execute()
         except: pass
 
         # Build Chapter List
         if len(toc) > 0:
-            # Analyze TOC Structure
             level_1_items = [t for t in toc if t[0] == 1]
             level_2_items = [t for t in toc if t[0] == 2]
             
-            # Smart Selection Strategy
             include_level_2 = False
-            
-            # Case A: Very few Level 1 items (e.g. just "Parts") but many Level 2 ("Chapters")
             if len(level_1_items) < 5 and len(level_2_items) > 5:
                 include_level_2 = True
-            
-            # Case B: No Level 1 items at all
             if not level_1_items:
                 include_level_2 = True
 
             for t in toc:
-                # Logic: Keep if Lvl 1 OR (Lvl 2 AND we decided to include them)
                 if t[0] == 1 or (t[0] == 2 and include_level_2):
-                    # Optional: Check keywords if it's Level 2 to avoid noise? 
-                    # For now, let's just be inclusive.
                     chapters_to_save.append({
                         "title": t[1],
                         "start_page": max(1, t[2] + pdf_offset)
                     })
         else:
-            # NO TOC FALLBACK: Try AI-based chapter detection
+            # NO TOC FALLBACK: AI-based chapter detection
             print("📖 No TOC found. Attempting AI-based chapter detection...")
             
-            # Extract text from WHOLE BOOK to find TOC (Don't limit to 100 pages)
             sample_text = ""
             max_scan_pages = min(500, len(doc))
             
-            # Limit to first 500 pages to avoid memory explosion on massive books, but 500 covers most TOCs
             for page_num in range(max_scan_pages):
-                # --- PROGRESS UPDATE ---
                 if page_num % 10 == 0:
-                    percent = 10 + int((page_num / max_scan_pages) * 70) # Map 0-500 pages to 10-80%
+                    percent = 10 + int((page_num / max_scan_pages) * 70)
                     try:
                         supabase.table("course_books").update({"status": f"processing_{percent}"}).eq("id", book_id).execute()
-                        print(f"⏳ Scan Progress: {percent}%")
                     except: pass
                 
                 page = doc[page_num]
                 page_text = page.get_text()
                 sample_text += f"\n--- PAGE {page_num + 1} ---\n{page_text[:2000]}"
             
-            # Use DeepSeek to detect chapters
             try:
-                # Update status before AI call
                 supabase.table("course_books").update({"status": "processing_90"}).eq("id", book_id).execute()
 
                 detection_prompt = f"""
@@ -471,66 +783,47 @@ Look for:
 2. Chapter headings like "Chapter 1 ........ 15" or "Unit 1 - Introduction ... 23"
 3. Any structured list of sections with page numbers
 
-Extract ALL chapters found. Use the page numbers shown in the Contents listing, NOT the PDF page number where you found the listing.
-
 Return a JSON array:
 [
   {{"title": "Chapter 1: Introduction", "page": 15}},
-  {{"title": "Chapter 2: Basics", "page": 32}},
-  {{"title": "Chapter 3: Advanced", "page": 58}}
+  {{"title": "Chapter 2: Basics", "page": 32}}
 ]
 
 CRITICAL:
 - Find ALL chapters, not just the first few
-- Use the page numbers from the contents listing (like "Chapter 1 ...... 15" means page 15)
+- Use the page numbers from the contents listing
 - Return ONLY valid JSON, no explanation
 """
                 
-                # Use higher max_tokens to ensure all chapters are returned
                 response = llm.bind(max_tokens=2000).invoke([
-                    SystemMessage(content="You extract chapter tables of contents from PDFs. Find ALL chapters and their CORRECT page numbers from the contents listing. Output only valid JSON array."),
+                    SystemMessage(content="You extract chapter tables of contents from PDFs. Output only valid JSON array."),
                     HumanMessage(content=detection_prompt)
                 ])
                 
-                # Parse the AI response
                 ai_response = response.content.strip()
-                print(f"🤖 AI Raw Response: {ai_response[:500]}...")
-                
-                # Clean up markdown if present
                 ai_response = ai_response.replace("```json", "").replace("```", "").strip()
                 
                 detected_chapters = json.loads(ai_response)
-                print(f"📋 Parsed chapters: {detected_chapters}")
                 
                 if detected_chapters and len(detected_chapters) > 0:
-                    # Filter out non-chapters (preface, foreword, acknowledgements, notes, etc.)
-                    exclude_keywords = ['foreword', 'preface', 'acknowledgement', 'introduction by', 
-                                       'note for', 'notes for', 'about the', 'dedication', 'contents',
-                                       'table of', 'index', 'appendix', 'glossary', 'bibliography']
+                    exclude_kw = ['foreword', 'preface', 'acknowledgement', 'introduction by', 
+                                   'note for', 'notes for', 'about the', 'dedication', 'contents',
+                                   'table of', 'index', 'appendix', 'glossary', 'bibliography']
                     
-                    filtered_chapters = []
                     for chap in detected_chapters:
                         title = chap.get("title", "").lower()
-                        if not any(kw in title for kw in exclude_keywords):
-                            filtered_chapters.append(chap)
+                        if not any(kw in title for kw in exclude_kw):
+                            chapters_to_save.append({
+                                "title": chap.get("title", "Untitled Chapter"),
+                                "start_page": max(1, chap.get("page", 1))
+                            })
                     
-                    print(f"🎯 AI detected {len(detected_chapters)} entries, kept {len(filtered_chapters)} chapters!")
-                    
-                    for chap in filtered_chapters:
-                        chapters_to_save.append({
-                            "title": chap.get("title", "Untitled Chapter"),
-                            "start_page": max(1, chap.get("page", 1))
-                        })
-                else:
-                    raise ValueError("No chapters detected - empty array")
+                    print(f"🎯 AI detected {len(chapters_to_save)} chapters!")
                     
             except Exception as ai_err:
                 print(f"⚠️ AI chapter detection failed: {ai_err}")
-                # Final fallback: Create single chapter
                 book_res = supabase.table("course_books").select("title").eq("id", book_id).single().execute()
-                book_title = "Full Book"
-                if book_res.data and book_res.data.get("title"):
-                    book_title = book_res.data["title"]
+                book_title = book_res.data.get("title", "Full Book") if book_res.data else "Full Book"
                 
                 chapters_to_save.append({
                     "title": book_title,
@@ -552,453 +845,956 @@ CRITICAL:
 
     except Exception as e:
         print(f"❌ Error: {str(e)}")
-        traceback.print_exc()  # Show full error details
+        traceback.print_exc()
         supabase.table("course_books").update({"status": "failed"}).eq("id", book_id).execute()
 
-# --- HELPER: Vector Diagram Detection ---
-def merge_rects(rects, threshold=15):
-    """Merges rectangles that are close to each other."""
-    if not rects: return []
-    rects.sort(key=lambda r: r.y0) # Sort by vertical position
+def merge_rects(rects, threshold=25):
+    if not rects:
+        return []
     merged = []
-    
-    current = rects[0]
-    for i in range(1, len(rects)):
-        next_rect = rects[i]
-        
-        # Check if close vertically and horizontally
-        # Expanded logic: if they overlap or constitute a single visual block
-        
-        # Vertical gap check
-        v_gap = max(0, next_rect.y0 - current.y1)
-        h_overlap = max(0, min(current.x1, next_rect.x1) - max(current.x0, next_rect.x0))
-        
-        # If they are close vertically OR (overlap horizontally AND are somewhat close)
-        if v_gap < threshold or (v_gap < threshold * 3 and h_overlap > 0):
-             current = current | next_rect # Union
-        else:
-            merged.append(current)
-            current = next_rect
-            
-    merged.append(current)
+    used = [False] * len(rects)
+    for i in range(len(rects)):
+        if used[i]:
+            continue
+        current = fitz.Rect(rects[i])
+        used[i] = True
+        changed = True
+        while changed:
+            changed = False
+            for j in range(len(rects)):
+                if used[j]:
+                    continue
+                other = fitz.Rect(rects[j])
+                expanded = current + threshold
+                if expanded.intersects(other) or current.intersects(other):
+                    current = current | other
+                    used[j] = True
+                    changed = True
+        merged.append(current)
     return merged
 
+def extract_tables_from_page(pdf_path: str, page_num: int) -> list[dict]:
+    """
+    Extract tables from a specific page using pdfplumber.
+    Returns list of table info with HTML content and bounding box.
+    """
+    tables_found = []
+    
+    try:
+        import pdfplumber
+        
+        with pdfplumber.open(pdf_path) as pdf:
+            if page_num >= len(pdf.pages):
+                return tables_found
+            
+            page = pdf.pages[page_num]
+            extracted_tables = page.extract_tables()
+            
+            if not extracted_tables:
+                return tables_found
+            
+            # Get table bounding boxes
+            tables_with_bbox = page.find_tables()
+            
+            for idx, table in enumerate(extracted_tables):
+                if not table or len(table) < 2:  # Skip empty or single-row tables
+                    continue
+                
+                # Clean table data
+                cleaned_table = []
+                for row in table:
+                    cleaned_row = [str(cell).strip() if cell else "" for cell in row]
+                    if any(cell for cell in cleaned_row):  # Skip empty rows
+                        cleaned_table.append(cleaned_row)
+                
+                if len(cleaned_table) < 2:
+                    continue
+                
+                # Convert to HTML
+                html_parts = ['<table style="border-collapse: collapse; width: 100%; margin: 10px 0;">']
+                
+                for row_idx, row in enumerate(cleaned_table):
+                    tag = 'th' if row_idx == 0 else 'td'
+                    html_parts.append('<tr>')
+                    for cell in row:
+                        cell_style = 'border: 1px solid #ddd; padding: 8px; text-align: left;'
+                        if row_idx == 0:
+                            cell_style += ' background-color: #f5f5f5; font-weight: bold;'
+                        html_parts.append(f'<{tag} style="{cell_style}">{cell}</{tag}>')
+                    html_parts.append('</tr>')
+                
+                html_parts.append('</table>')
+                html_content = ''.join(html_parts)
+                
+                # Get bounding box if available
+                bbox = None
+                if idx < len(tables_with_bbox):
+                    bbox = tables_with_bbox[idx].bbox  # (x0, top, x1, bottom)
+                
+                tables_found.append({
+                    'html': html_content,
+                    'bbox': bbox,
+                    'rows': len(cleaned_table),
+                    'cols': len(cleaned_table[0]) if cleaned_table else 0
+                })
+    
+    except Exception as e:
+        print(f"Error extracting tables from page {page_num}: {e}")
+    
+    return tables_found
+
+
+async def upload_image_to_supabase(supabase, path: str, img_bytes: bytes, max_retries: int = 3) -> tuple:
+    for attempt in range(max_retries):
+        try:
+            await asyncio.to_thread(
+                supabase.storage.from_("book-assets").upload,
+                path=path,
+                file=img_bytes,
+                file_options={"content-type": "image/png", "upsert": "true"}
+            )
+            public_url = supabase.storage.from_("book-assets").get_public_url(path)
+            return (True, public_url, None)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return (False, None, str(e))
+    return (False, None, "Max retries exceeded")
+def validate_image(img_bytes: bytes, min_width: int = 150, min_height: int = 150) -> tuple:
+    """
+    Validate image bytes.
+    Returns (is_valid, width, height, error_message)
+    """
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        img.verify()
+        
+        # Re-open after verify
+        img = Image.open(io.BytesIO(img_bytes))
+        width, height = img.size
+        
+        if width < min_width or height < min_height:
+            return (False, width, height, f"Too small: {width}x{height}")
+        
+        # Check if image has actual content (not all white/transparent)
+        # Convert to RGB if necessary
+        if img.mode in ('RGBA', 'P'):
+            img = img.convert('RGB')
+        
+        # Check for actual content
+        extrema = img.getextrema()
+        # If all channels have same min/max, image is likely solid color
+        is_solid = all(e[0] == e[1] for e in extrema)
+        if is_solid:
+            return (False, width, height, "Solid color image (no content)")
+        
+        return (True, width, height, None)
+        
+    except Exception as e:
+        return (False, 0, 0, str(e))
+
+def is_watermark_size(width: int, height: int) -> bool:
+    # Only filter small squares in the 430-460 range
+    if abs(width - height) < 20 and 430 < width < 460:
+        print(f"      [DEBUG] Filtering watermark: {width}x{height}")
+        return True
+    return False
+
+async def upload_image_to_supabase(supabase, path: str, img_bytes: bytes, max_retries: int = 3) -> tuple:
+    """
+    Upload image to Supabase with retry logic.
+    Returns (success, public_url, error_message)
+    """
+    for attempt in range(max_retries):
+        try:
+            await asyncio.to_thread(
+                supabase.storage.from_("book-assets").upload,
+                path=path,
+                file=img_bytes,
+                file_options={"content-type": "image/png", "upsert": "true"}
+            )
+            
+            # Get public URL
+            public_url = supabase.storage.from_("book-assets").get_public_url(path)
+            return (True, public_url, None)
+            
+        except Exception as e:
+            error_msg = str(e)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)  # Wait before retry
+                continue
+            return (False, None, error_msg)
+    
+    return (False, None, "Max retries exceeded")
+
+
 def get_solid_diagram_regions(page):
-    """Finds regions on the page that contain dense vector drawings (lines, curves)."""
+    """Finds regions on the page that contain dense vector drawings."""
     paths = page.get_drawings()
-    if not paths: return []
+    if not paths: 
+        return []
     
     rects_to_merge = []
     
     for p in paths:
-        # Ignore huge full-page borders or tiny dots
         r = p["rect"]
         w, h = r.width, r.height
         
-        # Filter noise
-        if w < 5 and h < 5: continue # Too small dot
-        if w > page.rect.width * 0.9 and h > page.rect.height * 0.9: continue # Page border
+        if w < 5 and h < 5: 
+            continue
+        if w > page.rect.width * 0.9 and h > page.rect.height * 0.9: 
+            continue
         
         rects_to_merge.append(r)
-        
-    # Heuristic: Merge close drawings
-    # Pass 1
-    merged = merge_rects(rects_to_merge, threshold=25)
     
-    # Pass 2 (Aggressive merge)
+    merged = merge_rects(rects_to_merge, threshold=25)
     final_regions = merge_rects(merged, threshold=50)
     
-    # Filter for significant size
     valid_regions = []
     for r in final_regions:
-        # Must be at least 10% of page width or reasonably tall
         if r.width > 50 and r.height > 50:
             valid_regions.append(r)
-            
     return valid_regions
 
+def is_valid_image_simple(img_bytes: bytes, min_width: int = 80, min_height: int = 80) -> tuple:
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        img.verify()
+        img = Image.open(io.BytesIO(img_bytes))
+        width, height = img.size
+        
+        if width < min_width or height < min_height:
+            return (False, width, height, f"Too small: {width}x{height}")
+        if len(img_bytes) < 500:
+            return (False, width, height, "File too small")
+        return (True, width, height, None)
+    except Exception as e:
+        return (False, 0, 0, str(e))
+
+
+def is_watermark_size(width: int, height: int) -> bool:
+    if abs(width - height) < 20 and 430 < width < 460:
+        return True
+    return False
+
+def _detect_code_blocks(text: str) -> str:
+    """
+    Detect code patterns in PyMuPDF text and wrap them in markdown code fences.
+    Handles C, Python, Java code commonly found in programming textbooks.
+    """
+    import re
+    
+    # Code indicators - if a line matches any of these, it's likely code
+    code_patterns = [
+        r'^\s*#\s*include',           # #include
+        r'^\s*main\s*\(',             # main(
+        r'^\s*int\s+\w+',             # int variable
+        r'^\s*float\s+\w+',           # float variable
+        r'^\s*char\s+\w+',            # char variable
+        r'^\s*void\s+\w+',            # void function
+        r'^\s*printf\s*\(',           # printf(
+        r'^\s*scanf\s*\(',            # scanf(
+        r'^\s*return\s',              # return statement
+        r'^\s*for\s*\(',              # for loop
+        r'^\s*while\s*\(',            # while loop
+        r'^\s*if\s*\(',               # if statement
+        r'^\s*else\b',               # else
+        r'^\s*switch\s*\(',           # switch
+        r'^\s*case\s+\w+\s*:',        # case label
+        r'^\s*default\s*:',           # default label
+        r'^\s*break\s*;',             # break;
+        r'^\s*\{',                    # opening brace
+        r'^\s*\}',                    # closing brace
+        r'.*;\s*$',                   # ends with semicolon
+        r'^\s*def\s+\w+',            # Python def
+        r'^\s*class\s+\w+',          # class definition
+        r'^\s*import\s+\w+',         # import
+        r'^\s*print\s*\(',           # Python print
+    ]
+    compiled = [re.compile(p) for p in code_patterns]
+    
+    def is_code_line(line: str) -> bool:
+        s = line.strip()
+        if not s:
+            return False  # empty lines are ambiguous
+        return any(p.match(s) for p in compiled)
+    
+    lines = text.split('\n')
+    result = []
+    i = 0
+    
+    while i < len(lines):
+        line = lines[i]
+        
+        # Check if this line looks like code
+        if is_code_line(line):
+            # Collect consecutive code lines (including blank lines between code)
+            code_block = [line]
+            j = i + 1
+            gap = 0  # allow small gaps (blank lines) within code
+            while j < len(lines):
+                if is_code_line(lines[j]):
+                    code_block.append(lines[j])
+                    gap = 0
+                elif lines[j].strip() == '' and gap < 2:
+                    code_block.append(lines[j])
+                    gap += 1
+                else:
+                    break
+                j += 1
+            
+            # Only wrap if we have 2+ code lines (avoid false positives)
+            if sum(1 for l in code_block if l.strip()) >= 2:
+                # Remove trailing blanks
+                while code_block and not code_block[-1].strip():
+                    code_block.pop()
+                result.append('```c')
+                result.extend(code_block)
+                result.append('```')
+            else:
+                result.extend(code_block)
+            i = j
+        else:
+            result.append(line)
+            i += 1
+    
+    return '\n'.join(result)
+
 async def process_chapter_content(chapter_id: str):
-    print(f"⚡ Processing Chapter Content: {chapter_id}")
+    """
+    Process a chapter with diagrams, tables, and text.
+    """
+    from services.azure_mistral_service import extract_text_with_mistral
+    
+    print(f"\n{'='*70}")
+    print(f"⚡ Processing Chapter: {chapter_id}")
+    print(f"{'='*70}")
     
     try:
+        # Get chapter info
         chapter = supabase.table("chapters").select("*").eq("id", chapter_id).single().execute()
         book_id = chapter.data['book_id']
         start_page = chapter.data['start_page_num']
+        chapter_title = chapter.data['title']
+        chapter_number = extract_chapter_number(chapter_title)
+        current_order = chapter.data['order_index']
         
-        book = supabase.table("course_books").select("file_url").eq("id", book_id).single().execute()
+        # Get book info
+        book = supabase.table("course_books").select("file_url, title, analogy_topic").eq("id", book_id).single().execute()
+        book_domain = book.data.get('analogy_topic', '')
         
-        # Increase timeout for large PDF downloads
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(book.data['file_url'])
-            pdf_bytes = resp.content
+        if not book_domain or len(book_domain) < 3:
+            title_lower = book.data.get('title', '').lower()
+            if "physics" in title_lower or "science" in title_lower: 
+                book_domain = "physics"
+            elif "math" in title_lower: 
+                book_domain = "math"
+            elif "biology" in title_lower: 
+                book_domain = "biology"
+            elif "chemistry" in title_lower: 
+                book_domain = "chemistry"
+            else: 
+                book_domain = "general"
+        
+        print(f"📖 Chapter: '{chapter_title}'")
+        print(f"   Number: {chapter_number}")
+        print(f"   TOC Start: page {start_page}")
+
+        # Load PDF
+        cache_dir = "books_cache"
+        os.makedirs(cache_dir, exist_ok=True)
+        pdf_path = os.path.join(cache_dir, f"{book_id}.pdf")
+        
+        if os.path.exists(pdf_path):
+            print(f"   📁 Using cached PDF")
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+        else:
+            print(f"   ⬇️ Downloading PDF...")
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                resp = await client.get(book.data['file_url'])
+                resp.raise_for_status()
+                pdf_bytes = resp.content
+            with open(pdf_path, "wb") as f:
+                f.write(pdf_bytes)
+        
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-
-        next_chap = supabase.table("chapters").select("start_page_num").eq("book_id", book_id).gt("order_index", chapter.data['order_index']).order("order_index").limit(1).execute()
         
-        # --- NEW LOGIC: Calculate precise page range ---
-        start_idx = max(0, start_page - 1)
-        end_idx = len(doc) # Default to end
-
+        # Get next chapter
+        next_chap = supabase.table("chapters").select("start_page_num, title, order_index").eq("book_id", book_id).gt("order_index", current_order).order("order_index").limit(1).execute()
+        
+        # ============================================================
+        # STEP 1: Find TRUE start page
+        # ============================================================
+        print(f"\n🔍 Step 1: Finding chapter start...")
+        
+        start_idx = start_page - 1
+        search_range = 35
+        found_start = False
+        
+        for offset in range(search_range):
+            for direction in [0, 1, -1]:
+                check_idx = start_idx + offset * direction if direction != 0 else start_idx + offset
+                
+                if check_idx < 0 or check_idx >= len(doc):
+                    continue
+                
+                page = doc[check_idx]
+                blocks = page.get_text("dict")["blocks"]
+                
+                for b in blocks:
+                    if b["type"] != 0:
+                        continue
+                    
+                    for line in b["lines"]:
+                        line_text = " ".join([s["text"] for s in line["spans"]])
+                        max_size = max([s["size"] for s in line["spans"]])
+                        
+                        if max_size > 30 and chapter_number:
+                            nums = re.findall(r'\d+', line_text)
+                            if nums and len(nums) == 1 and int(nums[0]) == chapter_number:
+                                new_start = check_idx + 1
+                                if new_start != start_page:
+                                    print(f"   ✅ Corrected: page {start_page} → {new_start}")
+                                    start_page = new_start
+                                    start_idx = check_idx
+                                    supabase.table("chapters").update({"start_page_num": new_start}).eq("id", chapter_id).execute()
+                                else:
+                                    print(f"   ✅ Start confirmed: page {start_page}")
+                                found_start = True
+                                break
+                    if found_start:
+                        break
+                if found_start:
+                    break
+            if found_start:
+                break
+        
+        if not found_start:
+            print(f"   ⚠️ Using TOC value: page {start_page}")
+            start_idx = start_page - 1
+        
+        # ============================================================
+        # STEP 2: Find TRUE end
+        # ============================================================
+        print(f"\n🔍 Step 2: Finding chapter end...")
+        
         if next_chap.data:
-            # If there is a next chapter, stop before it
-            end_idx = max(0, next_chap.data[0]['start_page_num'] - 1)
+            next_start_toc = next_chap.data[0]['start_page_num']
+            next_title = next_chap.data[0]['title']
+            next_ch_num = chapter_number + 1 if chapter_number else None
+            
+            print(f"   Next chapter: '{next_title}' (TOC says page {next_start_toc})")
+            
+            next_idx = next_start_toc - 1
+            end_idx = next_start_toc - 2
+            found_next = False
+            
+            for offset in range(25):
+                for direction in [0, 1, -1]:
+                    check_idx = next_idx + offset * direction if direction != 0 else next_idx + offset
+                    
+                    if check_idx < 0 or check_idx >= len(doc):
+                        continue
+                    
+                    page = doc[check_idx]
+                    blocks = page.get_text("dict")["blocks"]
+                    
+                    for b in blocks:
+                        if b["type"] != 0:
+                            continue
+                        
+                        for line in b["lines"]:
+                            line_text = " ".join([s["text"] for s in line["spans"]])
+                            max_size = max([s["size"] for s in line["spans"]])
+                            
+                            if max_size > 30 and next_ch_num:
+                                nums = re.findall(r'\d+', line_text)
+                                if nums and len(nums) == 1 and int(nums[0]) == next_ch_num:
+                                    end_idx = check_idx - 1
+                                    print(f"   ✅ Next chapter found at page {check_idx + 1}")
+                                    print(f"   ✅ This chapter ends at page {end_idx + 1}")
+                                    found_next = True
+                                    break
+                        if found_next:
+                            break
+                    if found_next:
+                        break
+                if found_next:
+                    break
+            
+            if not found_next:
+                end_idx = next_start_toc - 2
+                print(f"   ⚠️ Using TOC boundary: page {end_idx + 1}")
+        else:
+            end_idx = len(doc) - 1
+            print(f"   Last chapter, ends at page {end_idx + 1}")
         
-        # Determine total pages
-        total_pages_to_process = end_idx - start_idx
-        print(f"📖 Processing Ch {chapter.data['order_index']}: Pages {start_idx+1} to {end_idx} (Total: {total_pages_to_process})")
+        if end_idx < start_idx:
+            print(f"   ⚠️ ERROR: end < start! Using 15 pages default")
+            end_idx = min(start_idx + 14, len(doc) - 1)
         
-        processed_pages_count = 0
-
+        total_pages = end_idx - start_idx + 1
+        
+        print(f"\n{'='*50}")
+        print(f"📄 PAGE RANGE: {start_idx + 1} to {end_idx + 1} ({total_pages} pages)")
+        print(f"{'='*50}")
+        
         supabase.table("paragraphs").delete().eq("chapter_id", chapter_id).execute()
-
-        global_order_index = 1 # Re-added this line as it was missing from the provided snippet but is used later.
-        current_context = ""
-        current_section = chapter.data['title'] 
-        paragraphs_to_insert = []
-
-        for page_num in range(start_idx, end_idx):
-            # --- PROGRESS UPDATE ---
-            processed_pages_count += 1
-            if total_pages_to_process > 0:
-                percent = int((processed_pages_count / total_pages_to_process) * 100)
-                # Update DB every 3 pages or if it's the last one
-                if processed_pages_count % 3 == 0 or processed_pages_count == total_pages_to_process:
-                     try:
-                         supabase.table("chapters").update({"status": f"processing_{percent}"}).eq("id", chapter_id).execute()
-                         print(f"⏳ Progress: {percent}%")
-                     except Exception as e:
-                         print(f"⚠️ Progress Update Failed (Non-Critical): {e}")
-
+        
+        # ============================================================
+        # STEP 3: Extract content (Images + Tables + OCR)
+        # ============================================================
+        print(f"\n📸 Step 3: Extracting content...")
+        
+        page_texts = []
+        page_images = []
+        page_tables = []
+        current_section = chapter_title
+        image_counter = 0
+        
+        stats = {
+            'diagrams_found': 0,
+            'images_found': 0,
+            'uploaded': 0,
+            'skipped': 0,
+            'failed': 0,
+            'tables_found': 0
+        }
+        
+        for page_num in range(start_idx, end_idx + 1):
             page = doc[page_num]
             page_rect = page.rect
             blocks = page.get_text("dict")["blocks"]
-
-            # --- A. DETECT VECTOR DIAGRAMS ---
-            diagram_rects = get_solid_diagram_regions(page)
-            ignore_rects = [] # Areas where we have extracted a diagram, so ignore text here
+            this_page_images = []
+            ignore_rects = []
             
-            for d_rect in diagram_rects:
-                # --- SKIP FULL-PAGE "DIAGRAMS" ---
-                # If the detected region covers more than 50% of page, it's a full-page scan, not a diagram
-                rect_area = d_rect.width * d_rect.height
-                page_area = page_rect.width * page_rect.height
-                if rect_area > page_area * 0.5:
-                    print(f"   ⛔ SKIPPED: Full-page vector region ({rect_area/page_area*100:.1f}%)")
+            # === Extract tables ===
+            tables_html = extract_tables_from_page(pdf_bytes, page_num)
+            page_tables.append(tables_html)
+            stats['tables_found'] += len(tables_html)
+            
+            if tables_html:
+                print(f"   📊 Page {page_num + 1}: {len(tables_html)} table(s)")
+            
+            # === Extract vector diagrams ===
+            try:
+                diagram_regions = get_solid_diagram_regions(page)
+                
+                for d_rect in diagram_regions:
+                    if d_rect.width < 80 or d_rect.height < 80:
+                        continue
+                    
+                    rect_area = d_rect.width * d_rect.height
+                    page_area = page_rect.width * page_rect.height
+                    if rect_area > page_area * 0.6:
+                        continue
+                    
+                    try:
+                        mat = fitz.Matrix(2.0, 2.0)
+                        pix = page.get_pixmap(matrix=mat, clip=d_rect)
+                        if pix.alpha: 
+                            pix = fitz.Pixmap(pix, 0)
+                        img_bytes = pix.tobytes("png")
+                        
+                        is_valid, w, h, err = is_valid_image_simple(img_bytes)
+                        
+                        if not is_valid:
+                            stats['skipped'] += 1
+                            continue
+                        
+                        if is_watermark_size(w, h):
+                            stats['skipped'] += 1
+                            continue
+                        
+                        stats['diagrams_found'] += 1
+                        
+                        filename = f"{book_id}/{chapter_id}_{image_counter}.png"
+                        image_counter += 1
+                        
+                        success, url, error = await upload_image_to_supabase(supabase, filename, img_bytes)
+                        
+                        if success:
+                            stats['uploaded'] += 1
+                            this_page_images.append({
+                                "chapter_id": chapter_id,
+                                "content": url,
+                                "type": "image",
+                                "section_title": current_section,
+                                "is_completed": False
+                            })
+                            ignore_rects.append(d_rect)
+                            print(f"   ✅ Diagram: {w}x{h} on page {page_num + 1}")
+                        else:
+                            stats['failed'] += 1
+                            print(f"   ❌ Upload failed: {error}")
+                            
+                    except Exception as e:
+                        stats['failed'] += 1
+                        
+            except Exception as e:
+                pass
+            
+            # === Extract raster images ===
+            for block in blocks:
+                if block["type"] != 1:
                     continue
                 
-                # --- SKIP EXERCISE SECTIONS (should be text, not images) ---
-                # Check if there's text inside this region that looks like exercises
-                region_text = ""
-                for b in blocks:
-                    if b["type"] == 0:  # Text block
-                        b_rect = fitz.Rect(b["bbox"])
-                        if d_rect.intersects(b_rect):
-                            for l in b["lines"]:
-                                for s in l["spans"]:
-                                    region_text += s["text"] + " "
-                
-                # If region contains exercise-related keywords, skip diagram extraction
-                exercise_keywords = ["exercise", "question", "q.", "q1", "q2", "answer", "solve", "find the", "calculate", "what is", "why do", "how do", "explain"]
-                region_lower = region_text.lower()
-                is_exercise_region = any(kw in region_lower for kw in exercise_keywords)
-                
-                if is_exercise_region and len(region_text) > 100:
-                    print(f"   📝 SKIPPED: Exercise section detected (will extract as text)")
+                bbox = fitz.Rect(block["bbox"])
+                if bbox.width < 100 or bbox.height < 100:
                     continue
                 
-                # Expand slightly to catch labels just outside
-                d_rect_expanded = fitz.Rect(d_rect.x0 - 5, d_rect.y0 - 5, d_rect.x1 + 5, d_rect.y1 + 5)
+                skip = any(bbox & ir for ir in ignore_rects)
+                if skip:
+                    continue
+                
+                area_pct = (bbox.width * bbox.height) / (page_rect.width * page_rect.height) * 100
+                if area_pct > 85:
+                    continue
                 
                 try:
-                    # Render the Diagram Region
                     mat = fitz.Matrix(2.0, 2.0)
-                    pix = page.get_pixmap(matrix=mat, clip=d_rect_expanded)
-                    if pix.alpha: pix = fitz.Pixmap(pix, 0)
+                    pix = page.get_pixmap(matrix=mat, clip=bbox)
+                    if pix.alpha: 
+                        pix = fitz.Pixmap(pix, 0)
+                    img_bytes = pix.tobytes("png")
                     
-                    image_bytes = pix.tobytes("png")
-
-                    # --- VISION FILTER: Check if it's a real diagram ---
-                    is_valid = await is_valid_diagram(image_bytes)
+                    is_valid, w, h, err = is_valid_image_simple(img_bytes)
+                    
                     if not is_valid:
-                        print(f"   🚫 Vision Filter rejected region")
-                        continue
-
-                    filename = f"diagrams/{book_id}/{chapter_id}_{global_order_index}.png"
-                    
-                    # Upload
-                    supabase.storage.from_("book-assets").upload(
-                        path=filename, file=image_bytes,
-                        file_options={"content-type": "image/png", "upsert": "true"}
-                    )
-                    public_url = supabase.storage.from_("book-assets").get_public_url(filename)
-                    
-                    paragraphs_to_insert.append({
-                        "chapter_id": chapter_id, 
-                        "content": public_url, 
-                        "type": "image", # Treat as image
-                        "order_index": global_order_index, 
-                        "section_title": current_section,
-                        "is_completed": False
-                    })
-                    global_order_index += 1
-                    
-                    ignore_rects.append(d_rect_expanded)
-                    print(f"   🎨 Extracted Diagram at {d_rect}")
-                    
-                except Exception as e:
-                    print(f"   ⚠️ Diagram Extraction Failed: {e}")
-            
-            # --- B. PROCESS STANDARD BLOCKS ---
-            for block in blocks:
-                block_bbox = fitz.Rect(block["bbox"])
-                
-                # CHECK CONFLICT: Is this block inside a diagram we already extracted?
-                # If area overlap is significant (>50%), skip it (it's likely part of the diagram text)
-                is_duplicate = False
-                for ir in ignore_rects:
-                    intersect = block_bbox & ir # Intersection rect
-                    if not intersect.is_empty:
-                        overlap_area = intersect.width * intersect.height
-                        block_area = block_bbox.width * block_bbox.height
-                        # If more than 40% of the block is covered by the diagram, kill it
-                        if block_area > 0 and (overlap_area / block_area) > 0.4:
-                            is_duplicate = True
-                            break
-                
-                if is_duplicate:
-                    # print("   ⛔ Skipping text block (inside diagram)")
-                    continue
-
-                # --- IMAGES (Raster) ---
-                if block["type"] == 1: 
-                    bbox = fitz.Rect(block["bbox"])
-                    area_pct = (bbox.width * bbox.height) / (page_rect.width * page_rect.height) * 100
-                    
-                    if bbox.width < 150 or bbox.height < 150: 
+                        stats['skipped'] += 1
                         continue
                     
-                    # --- DEDUPLICATION: Skip if overlaps with already-extracted diagram ---
-                    is_duplicate = False
-                    for ir in ignore_rects:
-                        intersect = bbox & ir
-                        if not intersect.is_empty:
-                            overlap_area = intersect.width * intersect.height
-                            bbox_area = bbox.width * bbox.height
-                            if bbox_area > 0 and (overlap_area / bbox_area) > 0.5:
-                                is_duplicate = True
-                                break
-                    if is_duplicate:
-                        print(f"   ⛔ SKIPPED: Duplicate (already extracted as vector diagram)")
+                    if is_watermark_size(w, h):
+                        stats['skipped'] += 1
                         continue
                     
-                    # Skip full-page images (>90% area) - backgrounds/scans
-                    if area_pct > 90:
-                        print(f"   ⛔ SKIPPED: Full-page image ({area_pct:.1f}%)")
-                        continue
+                    stats['images_found'] += 1
                     
-                    # Skip known watermark size (443x443 appears on every page of some PDFs)
-                    if 440 < bbox.width < 450 and 440 < bbox.height < 450:
-                        print(f"   ⛔ SKIPPED: Watermark ({bbox.width:.0f}x{bbox.height:.0f})")
-                        continue
+                    filename = f"{book_id}/{chapter_id}_{image_counter}.png"
+                    image_counter += 1
                     
-                    print(f"   ✅ KEEPING: Image ({bbox.width:.0f}x{bbox.height:.0f}, {area_pct:.1f}%)")
-
-                    try:
-                        mat = fitz.Matrix(2.0, 2.0) 
-                        pix = page.get_pixmap(matrix=mat, clip=bbox)
-                        if pix.alpha: pix = fitz.Pixmap(pix, 0)
-                        
-                        image_bytes = pix.tobytes("png")
-                        
-                        # --- VISION FILTER: Check if it's a real diagram ---
-                        is_valid = await is_valid_diagram(image_bytes)
-                        if not is_valid:
-                            print(f"   🚫 Vision Filter rejected raster image")
-                            continue
-
-                        filename = f"{book_id}/{chapter_id}_{global_order_index}.png"
-                        supabase.storage.from_("book-assets").upload(
-                            path=filename, file=image_bytes,
-                            file_options={"content-type": "image/png", "upsert": "true"}
-                        )
-                        public_url = supabase.storage.from_("book-assets").get_public_url(filename)
-                        
-                        paragraphs_to_insert.append({
-                            "chapter_id": chapter_id, 
-                            "content": public_url, 
+                    success, url, error = await upload_image_to_supabase(supabase, filename, img_bytes)
+                    
+                    if success:
+                        stats['uploaded'] += 1
+                        this_page_images.append({
+                            "chapter_id": chapter_id,
+                            "content": url,
                             "type": "image",
-                            "section_title": current_section, 
+                            "section_title": current_section,
                             "is_completed": False
                         })
-                        global_order_index += 1
+                    else:
+                        stats['failed'] += 1
                         
-                        # --- FIX DUPLICATES: Ignore text in this region ---
-                        ignore_rects.append(bbox)
-                        
-                    except Exception: pass
-
-
-                # --- TEXT ---
-                elif block["type"] == 0:
-                    block_text = ""
-                    is_header = False
-                    is_code_block = False
-                    is_exercise_block = False  # NEW: Detect exercise questions
-                    
-                    for line in block["lines"]:
-                        line_text = ""
-                        for span in line["spans"]:
-                            span_text = span["text"]
-                            
-                            # CLEANUP: Skip lines that are just file references (e.g. ":52.7 .giF")
-                            if re.search(r'\.(gif|jpg|png|tif|bmp)\b', span_text.lower()) and len(span_text) < 50:
+                except Exception as e:
+                    stats['failed'] += 1
+            
+            # Queue for OCR
+            pix = page.get_pixmap()
+            if pix.alpha: 
+                pix = fitz.Pixmap(pix, 0)
+            
+            page_texts.append(None)
+            page_images.append(this_page_images)
+        
+        print(f"\n📊 Extraction Stats:")
+        print(f"   Diagrams found: {stats['diagrams_found']}")
+        print(f"   Raster images:  {stats['images_found']}")
+        print(f"   Tables:         {stats['tables_found']}")
+        print(f"   Uploaded:       {stats['uploaded']}")
+        print(f"   Skipped:        {stats['skipped']}")
+        print(f"   Failed:         {stats['failed']}")
+        
+        # ============================================================
+        # STEP 4: Run OCR
+        # ============================================================
+        print(f"\n🔍 Step 4: Running OCR on {len(page_texts)} pages...")
+        
+        sem = asyncio.Semaphore(4)
+        completed = [0]
+        
+        async def ocr_page(page_idx):
+            async with sem:
+                page = doc[page_idx]
+                pix = page.get_pixmap()
+                if pix.alpha:
+                    pix = fitz.Pixmap(pix, 0)
+                img_bytes = pix.tobytes("png")
+                
+                result = await extract_text_with_mistral(img_bytes, domain=book_domain)
+                completed[0] += 1
+                
+                if completed[0] % 5 == 0 or completed[0] == len(page_texts):
+                    pct = int((completed[0] / len(page_texts)) * 90)
+                    try:
+                        supabase.table("chapters").update({"status": f"processing_{pct}"}).eq("id", chapter_id).execute()
+                    except:
+                        pass
+                
+                return result
+        
+        results = await asyncio.gather(*[ocr_page(start_idx + i) for i in range(len(page_texts))])
+        
+        for i, text in enumerate(results):
+            page_texts[i] = text
+        
+        print(f"   ✅ OCR complete")
+        
+        # ============================================================
+        # STEP 5: Minimal trim (only first page check)
+        # ============================================================
+        print(f"\n✂️ Step 5: Validating first page...")
+        
+        if page_texts and page_texts[0] and chapter_number and chapter_number > 1:
+            first_text = page_texts[0].lower()
+            prev_ch = chapter_number - 1
+            
+            end_text = first_text[-600:] if len(first_text) > 600 else first_text
+            has_end = "exercises" in end_text or "what you have learnt" in end_text
+            has_prev = f"chapter {prev_ch}" in first_text
+            
+            if has_end and has_prev:
+                page = doc[start_idx]
+                blocks = page.get_text("dict")["blocks"]
+                has_header = False
+                
+                for b in blocks:
+                    if b["type"] != 0:
+                        continue
+                    for line in b["lines"]:
+                        max_size = max([s["size"] for s in line["spans"]])
+                        if max_size > 30:
+                            nums = re.findall(r'\d+', " ".join([s["text"] for s in line["spans"]]))
+                            if nums and int(nums[0]) == chapter_number:
+                                has_header = True
+                                break
+                    if has_header:
+                        break
+                
+                if not has_header:
+                    print(f"   🗑️ Skipping first page")
+                    page_texts[0] = ""
+                    page_images[0] = []
+                    page_tables[0] = []
+                else:
+                    print(f"   ✅ First page valid")
+            else:
+                print(f"   ✅ First page valid")
+        else:
+            print(f"   ✅ Skipped")
+        
+        # ============================================================
+        # STEP 6: Build paragraphs
+        # ============================================================
+        print(f"\n📝 Step 6: Building paragraphs...")
+        
+        paragraphs = []
+        order_idx = 1
+        
+        for page_idx in range(len(page_texts)):
+            # Add images
+            for img in page_images[page_idx]:
+                img["order_index"] = order_idx
+                paragraphs.append(img)
+                order_idx += 1
+            
+            # Add tables (as text type for DB compatibility)
+            for table_html in page_tables[page_idx]:
+                paragraphs.append({
+                    "chapter_id": chapter_id,
+                    "content": table_html,
+                    "type": "text",
+                    "order_index": order_idx,
+                    "section_title": current_section,
+                    "is_completed": False
+                })
+                order_idx += 1
+            
+            # Add text
+            text = page_texts[page_idx]
+            if not text or len(text.strip()) < 5:
+                continue
+            
+            for para in [p.strip() for p in text.split("\n\n") if p.strip()]:
+                if len(para) < 3:
+                    continue
+                
+                if re.match(r'^Table\s+\d+', para, re.IGNORECASE):
+                    continue
+                
+                if chapter_title:
+                    t1 = chapter_title.lower().replace(' ', '').replace(':', '').replace('-', '')
+                    t2 = para.lower().replace(' ', '').replace(':', '').replace('-', '')
+                    if t1 == t2:
+                        continue
+                
+                words = para.split()
+                if len(words) <= 4 and len(para) < 50:
+                    cap_count = sum(1 for w in words if w and w[0].isupper())
+                    if cap_count >= len(words) * 0.5:
+                        if not para.endswith(('.', ',', ';', ')')):
+                            if not any(c in para for c in ['{', '}', '(', ')', '=']):
+                                current_section = para[:60]
                                 continue
-
-                            font_name = span["font"].lower()
-                            
-                            # DEBUG: Trace fonts to fix detection
-                            # if page_num == start_idx: print(f"   [Font Trace] {font_name}: {span_text[:20]}")
-
-                            # Check for Code Font (Heuristic 1: Font Name)
-                            if "mono" in font_name or "courier" in font_name or "consolas" in font_name or "typewriter" in font_name:
-                                is_code_block = True
-                            
-                            # Check for Code Syntax (Heuristic 2: C-Style Endings)
-                            # If a line ends with ; or { or }, it's likely code. 
-                            if span_text.strip().endswith((";", "{", "}", "*/")):
-                                is_code_block = True
-                            
-                            # Check for Exercise/Question patterns
-                            span_lower = span_text.lower().strip()
-                            if (span_lower.startswith(("exercise", "questions", "q.", "q ")) or
-                                re.match(r'^\d+\.\s', span_text.strip()) or  # "1. ", "2. " etc
-                                "what is" in span_lower or "why do" in span_lower or 
-                                "explain" in span_lower or "describe" in span_lower):
-                                is_exercise_block = True
-
-                            # Check if text might be reversed (common PDF issue)
-                            # SKIP if it looks like a formula (has = or * or /)
-                            is_math_part = any(op in span_text for op in ["=", "*", "/", "+"])
-                            
-                            if len(span_text) > 3 and not is_math_part:
-                                reversed_text = span_text[::-1]
-                                common_words = [
-                                    'the', 'and', 'is', 'are', 'of', 'in', 'to', 'for', 'that', 'with', 'from', 'have', 'this', 'what', 'separation', 'process', 'substance', 'change', 'describe',
-                                    'int', 'float', 'char', 'void', 'main', 'printf', 'scanf', 'include', 'return', 'if', 'else', 'while', 'for', 'switch', 'case', 'break', 'continue', 'struct', 'union', 'typedef', 'define', 'header', 'stdio'
-                                ] 
-                                original_matches = sum(1 for w in common_words if w in span_text.lower())
-                                reversed_matches = sum(1 for w in common_words if w in reversed_text.lower())
-                                
-                                if reversed_matches > original_matches:
-                                    span_text = reversed_text
-                                    
-                            line_text += span_text + " "
-                            if span["size"] > 14: is_header = True
-                        
-                        # Use newline for code, space for regular text (within a block)
-                        if is_code_block:
-                            block_text += line_text.strip() + "\n"
-                        else:
-                            # New MATH Detection for individual lines
-                            clean_line = line_text.strip()
-                            # Heuristic: Contains =, <, > AND some math operator OR typical tokens
-                            is_math_line = False
-                            
-                            # Standard Equation: "x = y + 2" or "2x > 8"
-                            if any(op in clean_line for op in ["=", "<", ">", "≤", "≥", "≠"]) and len(clean_line) < 100:
-                                if any(op in clean_line for op in ["+", "*", "/", "^", "\\", "{", "}", "%", "-", "(", ")"]):
-                                    is_math_line = True
-                                elif re.search(r'\b(sin|cos|tan|log|ln|lim|x|y|z|theta|pi)\b', clean_line.lower()): # Variable heuristics
-                                    is_math_line = True
-                                    
-                            # Pure Math Expression (short): "2x + 5y"
-                            elif len(clean_line) < 50 and any(op in clean_line for op in ["+", "*", "^"]) and re.search(r'[0-9]', clean_line):
-                                 is_math_line = True
-                            
-                            # If it looks like a formula, wrap it immediately for this line
-                            if is_math_line and not is_header:
-                                # Quote it as latex
-                                block_text += "$$ " + clean_line.replace("$$", "") + " $$\n"
-                            else:
-                                block_text += line_text
-                    
-                    clean_text = block_text.strip()
-                    if not clean_text or len(clean_text) < 3: continue
-
-                    if is_header: 
-                        current_section = clean_text[:60] # Update Context
-                    
-                    # Wrap Code Blocks
-                    if is_code_block and not is_header:
-                        # Clean up any potential double wrapping if logic expands
-                        clean_text = f"```c\n{clean_text}\n```"
-                    
-                    # Wrap Exercise Blocks (styled like code but for questions)
-                    elif is_exercise_block and not is_header:
-                        clean_text = f"**📝 Exercises**\n\n{clean_text}"
-
-                    # Merge logic
-                    if not is_header and paragraphs_to_insert:
-                        last_para = paragraphs_to_insert[-1]
-                        
-                        should_merge = False
-                        
-                        # --- MERGE CODE BLOCKS ---
-                        if is_code_block and last_para["content"].startswith("```c"):
-                             # Merge two code blocks
-                            last_para["content"] = last_para["content"].replace("\n```", "") + "\n" + clean_text.replace("```c\n", "").replace("\n```", "") + "\n```"
-                            continue # Merged
-                        
-                        # --- MERGE TEXT BLOCKS ---
-                        elif not is_code_block and not last_para["content"].startswith("```c"):
-                            # Don't merge distinct Math blocks into text blindly? 
-                            # Actually it's fine, Markdown renders matched $$ blocks inline or block even if inside a paragraph.
-                            # But let's separate them if it's a BIG math block.
-                            
-                            if last_para["type"] == "image": should_merge = False
-                            elif last_para["section_title"] != current_section: should_merge = False 
-                            # If new text is purely math ($$ ... $$), maybe keep it separate?
-                            elif clean_text.startswith("$$") and clean_text.endswith("$$"): should_merge = False
-                            
-                            elif len(clean_text) < 300: should_merge = True 
-                            elif not last_para["content"].strip().endswith((".", "!", "?", ":")): should_merge = True 
-                            
-                            if should_merge and len(last_para["content"]) < 2000:
-                                last_para["content"] += " " + clean_text
-                                continue 
-                    
-                    type_label = "header" if is_header else "text"
-
-                    paragraphs_to_insert.append({
-                        "chapter_id": chapter_id, 
-                        "content": clean_text, 
-                        "type": type_label, 
-                        "order_index": global_order_index, 
-                        "section_title": current_section, 
-                        "is_completed": False
-                    })
-                    global_order_index += 1
-
-        if paragraphs_to_insert:
-            chunk_size = 100
-            for i in range(0, len(paragraphs_to_insert), chunk_size):
-                supabase.table("paragraphs").insert(paragraphs_to_insert[i:i+chunk_size]).execute()
-
-        # Mark as Completed explicitly so frontend stops polling
+                
+                if paragraphs and len(para) < 400:
+                    last = paragraphs[-1]
+                    if last["type"] == "text" and len(last["content"]) < 1500:
+                        last["content"] += "\n\n" + para
+                        continue
+                
+                paragraphs.append({
+                    "chapter_id": chapter_id,
+                    "content": para,
+                    "type": "text",
+                    "order_index": order_idx,
+                    "section_title": current_section,
+                    "is_completed": False
+                })
+                order_idx += 1
+        
+        # Save
+        if paragraphs:
+            print(f"💾 Saving {len(paragraphs)} items...")
+            for i in range(0, len(paragraphs), 100):
+                supabase.table("paragraphs").insert(paragraphs[i:i+100]).execute()
+        
         supabase.table("chapters").update({"status": "completed"}).eq("id", chapter_id).execute()
-        print(f"✅ Generated Chapter: {chapter.data['title']} (Status: Completed)")
+        
+        # Summary
+        text_count = len([p for p in paragraphs if p["type"] == "text"])
+        image_count = len([p for p in paragraphs if p["type"] == "image"])
+        
+        print(f"\n{'='*70}")
+        print(f"✅ COMPLETE: {chapter_title}")
+        print(f"   Pages: {total_pages}")
+        print(f"   Text blocks: {text_count}")
+        print(f"   Images: {image_count}")
+        print(f"{'='*70}")
 
     except Exception as e:
-        print(f"❌ Error generating chapter: {str(e)}")
+        print(f"\n❌ ERROR: {str(e)}")
         import traceback
         traceback.print_exc()
-        # Optional: Mark as failed?
         try:
-             supabase.table("chapters").update({"status": "failed"}).eq("id", chapter_id).execute()
+            supabase.table("chapters").update({"status": "failed"}).eq("id", chapter_id).execute()
+        except:
+            pass
+
+async def load_pdf(book_id: str, file_url: str):
+    """Load PDF from cache or download."""
+    import os
+    
+    cache_dir = "books_cache"
+    os.makedirs(cache_dir, exist_ok=True)
+    pdf_path = os.path.join(cache_dir, f"{book_id}.pdf")
+    
+    if os.path.exists(pdf_path):
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+    else:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            resp = await client.get(file_url)
+            resp.raise_for_status()
+            pdf_bytes = resp.content
+        with open(pdf_path, "wb") as f:
+            f.write(pdf_bytes)
+    
+    return fitz.open(stream=pdf_bytes, filetype="pdf")
+
+
+async def extract_chapter_content(doc, start_idx: int, end_idx: int, 
+                                   chapter_id: str, chapter_title: str,
+                                   book_domain: str, book_id: str):
+    """Extract images and OCR text from chapter pages."""
+    from services.azure_mistral_service import extract_text_with_mistral
+    import asyncio
+    
+    page_texts = []
+    page_images = []
+    paragraphs_to_insert = []
+    upload_queue = []
+    ocr_jobs = []
+    ocr_index_map = {}
+    current_section = chapter_title
+    
+    for page_num in range(start_idx, end_idx):
+        page = doc[page_num]
+        page_rect = page.rect
+        blocks = page.get_text("dict")["blocks"]
+        this_page_images = []
+
+        # Extract images (same as before, abbreviated for space)
+        try:
+            diagram_rects = get_solid_diagram_regions(page)
+            for d_rect in diagram_rects:
+                if d_rect.width < 100 or d_rect.height < 100:
+                    continue
+                try:
+                    mat = fitz.Matrix(2.0, 2.0)
+                    pix = page.get_pixmap(matrix=mat, clip=d_rect)
+                    if pix.alpha: pix = fitz.Pixmap(pix, 0)
+                    img_bytes = pix.tobytes("png")
+                    
+                    if await is_valid_diagram(img_bytes):
+                        idx = len(page_images) * 100 + len(this_page_images)
+                        filename = f"{book_id}/{chapter_id}_{idx}.png"
+                        upload_queue.append((filename, img_bytes))
+                        url = supabase.storage.from_("book-assets").get_public_url(filename)
+                        this_page_images.append({
+                            "chapter_id": chapter_id, "content": url, "type": "image",
+                            "section_title": current_section, "is_completed": False
+                        })
+                except: pass
         except: pass
-class TTSRequest(BaseModel):
-    text: str
-    language: str = "english" # english, hindi, spanish, chinese
+
+        # Queue OCR
+        pix = page.get_pixmap()
+        if pix.alpha: pix = fitz.Pixmap(pix, 0)
+        ocr_index_map[len(ocr_jobs)] = len(page_texts)
+        ocr_jobs.append((pix.tobytes("png"), current_section, page_num))
+        page_texts.append(None)
+        page_images.append(this_page_images)
+
+    # Upload images
+    if upload_queue:
+        async def upload_worker(path, data):
+            try:
+                await asyncio.to_thread(
+                    supabase.storage.from_("book-assets").upload,
+                    path=path, file=data,
+                    file_options={"content-type": "image/png", "upsert": "true"}
+                )
+            except: pass
+        await asyncio.gather(*[upload_worker(p, d) for p, d in upload_queue])
+
+    # Run OCR
+    if ocr_jobs:
+        sem = asyncio.Semaphore(4)
+        async def ocr_worker(img, sec, idx):
+            async with sem:
+                return await extract_text_with_mistral(img, domain=book_domain)
+        
+        results = await asyncio.gather(*[ocr_worker(img, sec, i) for i, (img, sec, _) in enumerate(ocr_jobs)])
+        for ocr_idx, text in enumerate(results):
+            page_texts[ocr_index_map[ocr_idx]] = text
+
+    return page_texts, page_images, paragraphs_to_insert
+
+
+def detect_domain(title: str) -> str:
+    """Detect book domain from title."""
+    t = title.lower()
+    if "physics" in t or "science" in t: return "physics"
+    if "math" in t or "calculus" in t: return "math"
+    if "biology" in t: return "biology"
+    if "chemistry" in t: return "chemistry"
+    if "history" in t: return "history"
+    if "geography" in t: return "geography"
+    return "general"
 
 @app.post("/api/speak")
 async def speak_endpoint(req: TTSRequest):

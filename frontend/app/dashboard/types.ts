@@ -7,6 +7,7 @@ export interface Book {
   fileUrl?: string | null;
   file?: File | null;
   coverUrl?: string;
+  analogy_topic?: string; // New: Stores the "Domain + Analogy" string
 }
 
 export interface Subject {
