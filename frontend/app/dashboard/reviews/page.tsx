@@ -23,7 +23,7 @@ export default function ReviewQueue() {
   const [reviews, setReviews] = useState<Review[]>([]);
   const [loading, setLoading] = useState(true);
   const [showQRModal, setShowQRModal] = useState(false);
-  const [qrCodeData, setQRCodeData] = useState<{ qr_code_base64: string; telegram_link: string } | null>(null);
+  const [qrCodeUrl, setQRCodeUrl] = useState<string>("");
   const [telegramConnected, setTelegramConnected] = useState(false);
   const [playingAudio, setPlayingAudio] = useState<string | null>(null);
   const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);
@@ -128,9 +128,9 @@ export default function ReviewQueue() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      const response = await fetch(`${API_URL}/api/reviews/telegram/qr/${user.id}`);
-      const data = await response.json();
-      setQRCodeData(data);
+      // Use the new endpoint that returns a PNG image directly
+      const qrUrl = `${API_URL}/api/user/telegram-qr/${user.id}`;
+      setQRCodeUrl(qrUrl);
       setShowQRModal(true);
     } catch (error) {
       console.error("Failed to generate QR code:", error);
@@ -219,7 +219,7 @@ export default function ReviewQueue() {
       </div>
 
       {/* QR Code Modal */}
-      {showQRModal && qrCodeData && (
+      {showQRModal && qrCodeUrl && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-slate-900 border border-white/10 rounded-2xl p-8 max-w-md w-full relative">
             <button
@@ -229,30 +229,33 @@ export default function ReviewQueue() {
               <X className="w-6 h-6" />
             </button>
 
-            <h2 className="text-2xl font-bold text-white mb-4">Connect Telegram</h2>
-            <p className="text-gray-400 mb-6">Scan this QR code with your phone to connect</p>
+            <h2 className="text-2xl font-bold text-white mb-2">Connect Telegram</h2>
+            <p className="text-gray-400 mb-6">Scan this QR code with your phone camera or Google Lens</p>
 
-            <div className="bg-white p-4 rounded-xl mb-6">
-              <Image
-                src={qrCodeData.qr_code_base64}
-                alt="QR Code"
-                width={300}
-                height={300}
-                className="w-full h-auto"
+            <div className="bg-white p-4 rounded-xl mb-6 flex items-center justify-center">
+              <img
+                src={qrCodeUrl}
+                alt="Telegram QR Code"
+                className="w-64 h-64"
               />
             </div>
 
-            <div className="text-center">
-              <p className="text-sm text-gray-400 mb-2">Or open this link on your phone:</p>
-              <a
-                href={qrCodeData.telegram_link}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-400 hover:text-blue-300 text-sm break-all"
-              >
-                {qrCodeData.telegram_link}
-              </a>
+            <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 mb-4">
+              <p className="text-sm text-blue-300 font-medium mb-2">📱 How to scan:</p>
+              <ul className="text-xs text-blue-200 space-y-1">
+                <li>• Open your phone camera app</li>
+                <li>• Point it at the QR code</li>
+                <li>• Tap the notification to open Telegram</li>
+                <li>• Or use Google Lens to scan</li>
+              </ul>
             </div>
+
+            <button
+              onClick={() => setShowQRModal(false)}
+              className="w-full px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors font-medium"
+            >
+              Done
+            </button>
           </div>
         </div>
       )}

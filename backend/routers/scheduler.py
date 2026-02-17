@@ -17,18 +17,21 @@ from services.email_service import send_30min_reminder_email, send_5min_reminder
 router = APIRouter()
 
 # --- CONFIG ---
-QSTASH_TOKEN = os.getenv("QSTASH_TOKEN")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-APP_URL = os.getenv("APP_URL") 
+# --- AWS CONFIG ---
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+AWS_LAMBDA_ARN = os.getenv("AWS_LAMBDA_ARN")     # The Worker (Lambda)
+AWS_ROLE_ARN = os.getenv("AWS_SCHEDULER_ROLE_ARN") # The Permission (IAM Role for Scheduler)
 
-if not QSTASH_TOKEN or not TELEGRAM_BOT_TOKEN:
-    print("⚠️ Warning: QStash or Telegram tokens missing in .env")
+if not AWS_LAMBDA_ARN or not AWS_ROLE_ARN:
+    print("⚠️ Warning: AWS Lambda/Role ARNs missing in .env")
 
-# Initialize QStash
+# Initialize AWS Scheduler Client
 try:
-    qstash_client = QStash(token=QSTASH_TOKEN)
+    import boto3
+    scheduler_client = boto3.client('scheduler', region_name=AWS_REGION)
 except:
-    qstash_client = None
+    scheduler_client = None
+    print("⚠️ Boto3 not installed or AWS credentials missing")
 
 # --- MODELS ---
 class CreateScheduleRequest(BaseModel):
@@ -37,167 +40,138 @@ class CreateScheduleRequest(BaseModel):
     chatId: str
     hour: int
     minute: int
-    timezone: str        # <--- NEW: e.g. "Asia/Kolkata"
-    channels: list[str]  # <--- NEW: ["telegram", "email"]
+    timezone: str        # e.g. "Asia/Kolkata"
+    channels: list[str]  # ["telegram", "email"]
 
 class CronPayload(BaseModel):
     type: str            # '30min' or '5min'
     userId: str
     bookId: str
     chatId: str
-    channels: list[str]  # <--- NEW
+    channels: list[str]
 
-# --- HELPER FUNCTIONS ---
-async def send_telegram_message(chat_id: str, text: str, buttons: list = None):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
-    if buttons:
-        keyboard = [[{"text": btn, "callback_data": btn.upper()} for btn in buttons]]
-        payload["reply_markup"] = {"inline_keyboard": keyboard}
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(url, json=payload)
-        if resp.status_code != 200:
-            print(f"❌ Telegram Reply Failed: {resp.text}")
-        else:
-            print(f"✅ Telegram Reply Sent to {chat_id}")
-
-# --- ROUTES ---
-
-@router.get("/user/telegram-status/{user_id}")
-async def check_telegram_status(user_id: str):
-    # Check if profile has a chat_id
-    res = supabase.table("profiles").select("telegram_chat_id").eq("id", user_id).single().execute()
-    
-    is_connected = False
-    if res.data and res.data.get("telegram_chat_id"):
-        is_connected = True
-        
-    return {"connected": is_connected}
-
-# @router.post("/schedule/create")
-# async def create_schedule(req: CreateScheduleRequest):
-#     if not qstash_client:
-#         raise HTTPException(status_code=500, detail="QStash not configured")
-    
-#     target_chat_id = req.chatId
-    
-#     # If frontend sent placeholder, lookup in DB
-#     if req.chatId == "TEMP_CHAT_ID" or not req.chatId:
-#         profile = supabase.table("profiles").select("telegram_chat_id").eq("id", req.userId).single().execute()
-#         if profile.data and profile.data.get("telegram_chat_id"):
-#             target_chat_id = profile.data["telegram_chat_id"]
-#         else:
-#             raise HTTPException(status_code=400, detail="Telegram not connected. Please connect first.")
-
-#     # 1. Calculate Timings (Simplified for MVP - Assuming UTC input)
-#     # Schedule 30 mins before
-#     dt = datetime(2024, 1, 1, req.hour, req.minute) - timedelta(minutes=30)
-#     cron_30 = f"{dt.minute} {dt.hour} * * *"
-    
-#     # Schedule 5 mins before
-#     dt_5 = datetime(2024, 1, 1, req.hour, req.minute) - timedelta(minutes=5)
-#     cron_5 = f"{dt_5.minute} {dt_5.hour} * * *"
-
-#     print(f"📅 Scheduling for User {req.userId}: {cron_30} and {cron_5}")
-
-#     try:
-#         # 2. Register with Upstash
-#         res_30 = qstash_client.schedule.create(
-#             cron=cron_30,
-#             destination=f"{APP_URL}/api/cron/trigger",
-#             body={"type": "30min", "userId": req.userId, "bookId": req.bookId, "chatId": req.chatId},
-#         )
-        
-#         res_5 = qstash_client.schedule.create(
-#             cron=cron_5,
-#             destination=f"{APP_URL}/api/cron/trigger",
-#             body={"type": "5min", "userId": req.userId, "bookId": req.bookId, "chatId": req.chatId},
-#         )
-
-#         # 3. Save to Supabase
-#         supabase.table("study_schedules").insert({
-#             "user_id": req.userId,
-#             "book_id": req.bookId,
-#             "telegram_chat_id": req.chatId,
-#             "qstash_schedule_id_30": res_30.schedule_id,
-#             "qstash_schedule_id_5": res_5.schedule_id
-#         }).execute()
-
-#         return {"status": "scheduled", "ids": [res_30.schedule_id, res_5.schedule_id]}
-    
-#     except Exception as e:
-#         print(f"Error scheduling: {e}")
-#         raise HTTPException(status_code=500, detail=str(e))
 @router.post("/schedule/create")
 async def create_schedule(req: CreateScheduleRequest):
-    if not qstash_client:
-        raise HTTPException(status_code=500, detail="QStash not configured")
+    if not scheduler_client:
+        raise HTTPException(status_code=500, detail="AWS Scheduler not configured")
+
     target_chat_id = req.chatId
     if req.chatId == "TEMP_CHAT_ID" or not req.chatId:
         profile = supabase.table("profiles").select("telegram_chat_id").eq("id", req.userId).single().execute()
         if profile.data and profile.data.get("telegram_chat_id"):
-            target_chat_id = profile.data["telegram_chat_id"] # <--- WE HAVE THE REAL ID HERE
+            target_chat_id = profile.data["telegram_chat_id"]
         else:
             print("❌ No Telegram ID found in profile.")
+            # raise HTTPException(status_code=400, detail="Telegram not connected")
+
     # 1. Convert User's Local Time to UTC
     try:
         local_tz = pytz.timezone(req.timezone)
-        
-        # Create a "today" object at the user's preferred time
         now = datetime.now()
         local_dt = local_tz.localize(datetime(now.year, now.month, now.day, req.hour, req.minute))
-        
-        # Convert to UTC
         utc_dt = local_dt.astimezone(pytz.utc)
-        
         print(f"🕒 User Time: {req.hour}:{req.minute} {req.timezone} -> UTC: {utc_dt.hour}:{utc_dt.minute}")
     except Exception as e:
         print(f"Timezone error: {e}")
-        # Fallback to raw input if timezone fails
         utc_dt = datetime(now.year, now.month, now.day, req.hour, req.minute)
 
-    # 2. Calculate Triggers (based on UTC time)
-    # Schedule 3 mins before (single reminder)
-    dt_3 = utc_dt - timedelta(minutes=3)
-    cron_3 = f"{dt_3.minute} {dt_3.hour} * * *"
-
-    print(f"📅 Scheduling for User {req.userId}: 3m({cron_3})")
+    # 2. Calculate Trigger (1 Minute Before)
+    # For a daily schedule, we need the time 1 minute before the target time
+    # e.g. Target 09:00 -> Trigger 08:59
+    
+    # We use the UTC time for the cron expression
+    # Subtract 1 minute from the UTC target time of *today* to get the right MM HH
+    trigger_dt = utc_dt - timedelta(minutes=1)
+    
+    # Format for EventBridge Cron: cron(mm hh * * ? *)
+    # This runs every day at the specified UTC time
+    cron_expr = f"cron({trigger_dt.minute} {trigger_dt.hour} * * ? *)"
+    
+    print(f"📅 Scheduling Daily for User {req.userId}: {req.hour}:{req.minute} {req.timezone} (UTC Trigger: {trigger_dt.hour}:{trigger_dt.minute})")
 
     try:
-        # 3. Register with Upstash
-        # We pass the 'channels' list into the body so the trigger knows who to message
+        # A. Log Session (Create pending session now)
+        # For recurring, we might not want to create a session immediately for *every* future day right now.
+        # But for the immediate next one, we can. 
+        # However, for simplicity in this MVP, we will rely on the Lambda to just send the alert.
+        # The Lambda currently puts "CONFIRM" or "SKIP" in buttons.
         
-        # 3 Minute Trigger
-        res_3 = qstash_client.schedule.create(
-            cron=cron_3,
-            destination=f"{os.getenv('APP_URL')}/api/cron/trigger",
-            body=json.dumps({
-                "type": "3min", 
-                "userId": req.userId, 
-                "bookId": req.bookId, 
-                "chatId": target_chat_id, 
-                "channels": req.channels
-            }),
+        lambda_payload = {
+            "chat_id": target_chat_id,
+            "message": f"⚠️ **Daily Study Reminder!**\n\nTime to learn! Are you ready?",
+            # Using more specific callback data
+            "buttons": [["I'm Ready", "CONFIRM_SESSION"], ["Skip Today", "SKIP_SESSION"], ["Turn Off", "STOP_ALERTS"]]
+        }
+
+        # B. Create/Update Schedule in AWS
+        # We use a stable name (userId_bookId) so we can overwrite/update it easily to avoid duplicates
+        schedule_name = f"study_alert_{req.userId}_{req.bookId}"
+        
+        response = scheduler_client.create_schedule(
+            Name=schedule_name,
+            ScheduleExpression=cron_expr,
+            Target={
+                'Arn': AWS_LAMBDA_ARN,
+                'RoleArn': AWS_ROLE_ARN,
+                'Input': json.dumps(lambda_payload)
+            },
+            FlexibleTimeWindow={'Mode': 'OFF'},
+            # ActionAfterCompletion='DELETE' # REMOVED: We want it to recur!
         )
+        
+        print(f"✅ AWS Schedule Created/Updated: {response.get('ScheduleArn')}")
 
-        # 4. Save to Supabase
-        supabase.table("study_schedules").insert({
-            "user_id": req.userId,
-            "book_id": req.bookId,
-            "telegram_chat_id": target_chat_id,
-            "cron_schedule": f"{req.hour}:{req.minute} {req.timezone}",
-            "qstash_schedule_id_3": res_3
-        }).execute()
+        # C. Save to Supabase (Record the ARN)
+        # Check if exists first to update or insert
+        current_schedule = supabase.table("study_schedules").select("*").eq("user_id", req.userId).eq("book_id", req.bookId).execute()
+        
+        if current_schedule.data:
+             supabase.table("study_schedules").update({
+                "telegram_chat_id": target_chat_id,
+                "cron_schedule": f"{req.hour}:{req.minute} {req.timezone}",
+                "qstash_schedule_id_3": response.get('ScheduleArn')
+            }).eq("id", current_schedule.data[0]['id']).execute()
+        else:
+            supabase.table("study_schedules").insert({
+                "user_id": req.userId,
+                "book_id": req.bookId,
+                "telegram_chat_id": target_chat_id,
+                "cron_schedule": f"{req.hour}:{req.minute} {req.timezone}",
+                "qstash_schedule_id_3": response.get('ScheduleArn') 
+            }).execute()
 
-        return {"status": "scheduled", "ids": [res_3]}
+        return {"status": "scheduled", "ids": [response.get('ScheduleArn')]}
     
     except Exception as e:
-        print(f"Error scheduling: {e}")
+        print(f"Error scheduling AWS: {e}")
+        return {"status": "error", "detail": str(e)}
+
+
+@router.delete("/schedule/delete/{user_id}/{book_id}")
+async def delete_schedule(user_id: str, book_id: str):
+    """Delete the AWS Schedule (Opt-out)"""
+    if not scheduler_client:
+         raise HTTPException(status_code=500, detail="AWS Scheduler not configured")
+         
+    schedule_name = f"study_alert_{user_id}_{book_id}"
+    
+    try:
+        # Delete from AWS
+        scheduler_client.delete_schedule(Name=schedule_name)
+        print(f"✅ AWS Schedule Deleted: {schedule_name}")
+    except Exception as e:
+        if "ResourceNotFoundException" in str(e):
+             print(f"⚠️ Schedule not found in AWS (already deleted?): {schedule_name}")
+        else:
+            print(f"❌ Error deleting AWS schedule: {e}")
+            # We continue to delete from DB even if AWS fails
+            
+    try:
+        # Delete from DB
+        supabase.table("study_schedules").delete().eq("user_id", user_id).eq("book_id", book_id).execute()
+        return {"status": "deleted"}
+    except Exception as e:
+        print(f"❌ Error deleting DB schedule: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ... imports and setup above remain the same ...
@@ -336,6 +310,70 @@ async def send_telegram_message(chat_id: str, text: str, buttons: list = None):
             print(f"❌ TELEGRAM API ERROR: {resp.status_code} - {resp.text}")
         else:
             print(f"✅ Message sent to {chat_id}")
+
+# --- EMAIL ENDPOINTS ---
+
+@router.get("/user/telegram-qr/{user_id}")
+async def get_telegram_qr(user_id: str):
+    """Generate QR code for easy Telegram bot connection"""
+    try:
+        import qrcode
+        from io import BytesIO
+        from fastapi.responses import StreamingResponse
+        
+        # Get bot username from token (we'll use the token to fetch it)
+        TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+        if not TELEGRAM_BOT_TOKEN:
+            raise HTTPException(status_code=500, detail="Bot token not configured")
+        
+        # Fetch bot info to get username
+        async with httpx.AsyncClient() as client:
+            bot_info_resp = await client.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe")
+            if bot_info_resp.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to fetch bot info")
+            bot_data = bot_info_resp.json()
+            bot_username = bot_data.get("result", {}).get("username", "")
+        
+        if not bot_username:
+            raise HTTPException(status_code=500, detail="Bot username not found")
+        
+        # Create Telegram deep link
+        telegram_link = f"https://t.me/{bot_username}?start={user_id}"
+        
+        # Generate QR code
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(telegram_link)
+        qr.make(fit=True)
+        
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        # Convert to bytes
+        buf = BytesIO()
+        img.save(buf, format='PNG')
+        buf.seek(0)
+        
+        return StreamingResponse(buf, media_type="image/png")
+        
+    except ImportError:
+        raise HTTPException(status_code=500, detail="QR code library not installed")
+    except Exception as e:
+        print(f"❌ QR generation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/user/telegram-status/{user_id}")
+async def get_telegram_status(user_id: str):
+    """Check if user has connected their Telegram account"""
+    try:
+        res = supabase.table("profiles").select("telegram_chat_id").eq("id", user_id).single().execute()
+        
+        if res.data and res.data.get("telegram_chat_id"):
+            return {"connected": True}
+        else:
+            return {"connected": False}
+    except Exception as e:
+        print(f"❌ Error checking Telegram status: {e}")
+        return {"connected": False}
 
 # --- EMAIL ENDPOINTS ---
 

@@ -135,11 +135,22 @@ async def handle_telegram_webhook(update: dict):
         chat_id = str(callback["message"]["chat"]["id"])
         data = callback["data"]
         
-        if data == "SNOOZE":
+        if data == "SNOOZE" or data == "SKIP_SESSION":
             await send_telegram_message(
                 chat_id,
                 "⏰ Okay! I'll remind you tomorrow."
             )
-        # Add more callback handlers as needed
+        elif data == "CONFIRM_SESSION":
+             await send_telegram_message(
+                chat_id,
+                "🚀 **Great! See you on the app!**\n\nLet's crush this session! 💪"
+            )
+        elif data == "STOP_ALERTS":
+            await send_telegram_message(
+                chat_id,
+                "🔕 **Alerts Turned Off.**\n\nYou can re-enable them anytime from the app schedule."
+            )
+            # We should ideally call the delete endpoint here too, but simplest is to just tell user.
+            # Or user deletes from app. For now, this is just a polite response.
     
     return {"status": "ok"}

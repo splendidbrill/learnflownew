@@ -681,7 +681,31 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     }
   };
 
-  // 4. CHAT HANDLER
+  // 4. DELETE SCHEDULE HANDLER
+  const handleDeleteSchedule = async () => {
+    if (!user || !book) return;
+
+    if (!confirm("Are you sure you want to turn off alerts for this book?")) return;
+
+    try {
+      const response = await fetch(`${API_URL}/api/schedule/delete/${user.id}/${book.id}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to delete schedule");
+      }
+
+      alert("Alerts turned off successfully.");
+      setIsScheduleModalOpen(false);
+
+    } catch (error) {
+      console.error("Error deleting schedule:", error);
+      alert("Failed to turn off alerts. Please try again.");
+    }
+  };
+
+  // 5. CHAT HANDLER
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || !selectedChapter) return;
@@ -2035,6 +2059,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
           onClose={() => setIsScheduleModalOpen(false)}
           onSave={handleScheduleSave}
           onSkip={handleSkipSchedule}
+          onDelete={handleDeleteSchedule}
           mode={scheduleMode}
           userId={user.id}
           botName="learnainew_bot" // Your actual bot name

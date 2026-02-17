@@ -11,6 +11,7 @@ interface ScheduleModalProps {
   mode: "create" | "edit";
   userId: string;
   botName: string;
+  onDelete?: () => Promise<void>;
 }
 
 export const ScheduleModal: React.FC<ScheduleModalProps> = ({
@@ -21,6 +22,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   mode,
   userId,
   botName,
+  onDelete,
 }) => {
   const [time, setTime] = useState("09:00");
 
@@ -49,10 +51,10 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   // Handle Telegram deep link with popup blocker detection
   const handleTelegramLink = () => {
     const deepLink = `https://t.me/${botName}?start=${userId}`;
-    
+
     // Try to open in new window
     const newWindow = window.open(deepLink, "_blank");
-    
+
     // Check if popup was blocked
     if (!newWindow || newWindow.closed || typeof newWindow.closed === "undefined") {
       setPopupBlocked(true);
@@ -197,11 +199,10 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
               onClick={() =>
                 setChannels({ telegram: true, email: false })
               }
-              className={`relative p-2 rounded-xl border flex flex-col items-center gap-1 transition-all ${
-                channels.telegram
-                  ? "bg-blue-500/20 border-blue-500 text-blue-200 shadow-[0_0_15px_rgba(59,130,246,0.2)]"
-                  : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10"
-              }`}
+              className={`relative p-2 rounded-xl border flex flex-col items-center gap-1 transition-all ${channels.telegram
+                ? "bg-blue-500/20 border-blue-500 text-blue-200 shadow-[0_0_15px_rgba(59,130,246,0.2)]"
+                : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10"
+                }`}
             >
               <Send className="w-4 h-4" />
               <span className="text-[10px] font-bold">Telegram</span>
@@ -215,11 +216,10 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
               onClick={() =>
                 setChannels({ telegram: false, email: true })
               }
-              className={`relative p-2 rounded-xl border flex flex-col items-center gap-1 transition-all ${
-                channels.email
-                  ? "bg-purple-500/20 border-purple-500 text-purple-200 shadow-[0_0_15px_rgba(168,85,247,0.2)]"
-                  : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10"
-              }`}
+              className={`relative p-2 rounded-xl border flex flex-col items-center gap-1 transition-all ${channels.email
+                ? "bg-purple-500/20 border-purple-500 text-purple-200 shadow-[0_0_15px_rgba(168,85,247,0.2)]"
+                : "bg-white/5 border-white/10 text-gray-400 hover:bg-white/10"
+                }`}
             >
               <Mail className="w-4 h-4" />
               <span className="text-[10px] font-bold">Email</span>
@@ -270,7 +270,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                     <p className="text-[9px] text-blue-300 mt-1 text-center opacity-80">
                       ✨ Just tap "Send" when Telegram opens. That's it!
                     </p>
-                    
+
                     {/* Show popup blocked warning */}
                     {popupBlocked && (
                       <div className="mt-2 bg-orange-500/20 border border-orange-500/40 rounded-lg p-2 text-orange-200 text-[10px] animate-in fade-in">
@@ -281,22 +281,24 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                     )}
                   </div>
 
-                  {/* Alternative: QR Code */}
-                  <details className="text-[10px] text-gray-400" open={popupBlocked}>
-                    <summary className="cursor-pointer hover:text-blue-300 mb-1">
-                      📱 Or scan this QR code with your phone
-                    </summary>
-                    <div className="bg-white p-1 rounded-lg inline-block">
+
+                  {/* QR Code - Always Visible */}
+                  <div className="mt-2 text-center">
+                    <p className="text-[10px] text-blue-300 mb-2 font-semibold">
+                      📱 Or scan this QR code with your phone:
+                    </p>
+                    <div className="bg-white p-2 rounded-lg inline-block">
                       <img
-                        src={`https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=https://t.me/${botName}?start=${userId}`}
-                        alt="QR Code"
-                        className="w-[100px] h-[100px]"
+                        src={`${process.env.NEXT_PUBLIC_API_URL}/api/user/telegram-qr/${userId}`}
+                        alt="Telegram QR Code"
+                        className="w-[120px] h-[120px]"
                       />
                     </div>
-                    <p className="text-[9px] mt-0.5 opacity-70">
+                    <p className="text-[9px] mt-1 opacity-70 text-blue-200">
                       Use Google Lens or your camera to scan
                     </p>
-                  </details>
+                  </div>
+
 
                   {/* Manual fallback */}
                   <details className="text-[10px] text-gray-400">
@@ -355,6 +357,35 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
               Skip
             </button>
           )}
+
+          {/* Delete Button (Only in Edit Mode) */}
+          {mode === "edit" && (
+            <button
+              onClick={async () => {
+                if (confirm("Are you sure you want to turn off alerts for this book?")) {
+                  try {
+                    // We need bookId passed as prop or context. assuming it's available or we pass it
+                    // Assuming onSave handles logic, or we add onDelete prop.
+                    // Ideally ScheduleModal should receive an onDelete prop.
+                    // The caller (BookClient) handles the API call.
+                    if (onDelete) {
+                      await onDelete();
+                      onClose();
+                    } else {
+                      alert("Delete functionality not wired up yet.");
+                    }
+                  } catch (e) {
+                    console.error(e);
+                    alert("Failed to turn off alerts.");
+                  }
+                }
+              }}
+              className="px-4 py-2 rounded-xl bg-red-500/10 text-red-400 hover:bg-red-500/20 hover:text-red-300 transition-colors text-sm font-medium"
+            >
+              Turn Off
+            </button>
+          )}
+
           <button
             onClick={handleSave}
             disabled={
