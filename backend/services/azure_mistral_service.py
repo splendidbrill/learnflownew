@@ -11,15 +11,14 @@ from PIL import Image
 load_dotenv()
 
 # Configuration
-# User provided: https://tusharkarancan-8328-resource.services.ai.azure.com/providers/mistral/azure/ocr
-MISTRAL_ENDPOINT = "https://tusharkarancan-8328-resource.services.ai.azure.com/providers/mistral/azure/ocr"
-MISTRAL_KEY = os.getenv("AZURE_TEXT_API_KEY", "") 
+MISTRAL_ENDPOINT = "https://farcast-resource.services.ai.azure.com/providers/mistral/azure/ocr"
+MISTRAL_KEY = os.getenv("AZURE_TEXT_API_KEY", "")
 if os.getenv("AZURE_MISTRAL_KEY"):
     MISTRAL_KEY = os.getenv("AZURE_MISTRAL_KEY")
 
-MISTRAL_MODEL = "mistral-document-ai-2505"
+MISTRAL_MODEL = "mistral-document-ai-2512"
 
-print(f"🔍 OCR Service: Azure Mistral Document AI ({MISTRAL_MODEL})")
+print(f"🔍 OCR Service: Azure Mistral Document AI 2512 ({MISTRAL_MODEL})")
 
 async def extract_text_with_mistral(image_bytes: bytes, domain: str = "general") -> str:
     """

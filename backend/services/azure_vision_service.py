@@ -97,7 +97,7 @@ async def extract_text_with_azure_vision(image_bytes: bytes) -> str:
                 api_key=os.getenv("AZURE_TEXT_API_KEY"),
             )
             
-            model = os.getenv("AZURE_TEXT_MODEL", "DeepSeek-V3")
+            model = os.getenv("AZURE_TEXT_MODEL", "DeepSeek-V4-Pro")
             
             prompt = f"""You are a Technical Book Formatter.
 Input is RAW text from a PDF page (Physics/CS).

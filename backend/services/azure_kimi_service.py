@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration
-AZURE_KIMI_ENDPOINT = os.getenv("AZURE_KIMI_ENDPOINT", "https://tusharkarancan-8328-resource.services.ai.azure.com/openai/v1/")
+AZURE_KIMI_ENDPOINT = os.getenv("AZURE_KIMI_ENDPOINT", "https://farcast-resource.services.ai.azure.com/openai/v1/")
 # Clean the endpoint for Azure SDK (must be base resource URL)
 if "/openai/v1" in AZURE_KIMI_ENDPOINT:
     AZURE_KIMI_ENDPOINT = AZURE_KIMI_ENDPOINT.split("/openai/v1")[0]
@@ -18,10 +18,10 @@ if "/chat/completions" in AZURE_KIMI_ENDPOINT:
 if AZURE_KIMI_ENDPOINT.endswith("/"): AZURE_KIMI_ENDPOINT = AZURE_KIMI_ENDPOINT[:-1]
 
 AZURE_KIMI_KEY = os.getenv("AZURE_TEXT_API_KEY", "") 
-AZURE_KIMI_MODEL = "Kimi-K2.5" 
+AZURE_KIMI_MODEL = "Kimi-K2.6"
 API_VERSION = "2024-05-01-preview"
 
-print(f"🔍 OCR Service: Azure Kimi K2.5 ({AZURE_KIMI_MODEL}) [Azure SDK] - Refined")
+print(f"🔍 OCR Service: Azure Kimi K2.6 ({AZURE_KIMI_MODEL}) [Azure SDK] - Refined")
 
 def _resize_image_bytes(image_bytes: bytes, max_dim: int = 2048) -> bytes:
     """Resize image to save tokens/bandwidth (2048px for clarity)"""
