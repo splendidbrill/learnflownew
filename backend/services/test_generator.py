@@ -6,7 +6,8 @@ import random
 from typing import List, Dict, Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
-from db import supabase
+from db_helpers import db_fetch, db_fetchrow, db_execute, db_fetchval
+from db import get_pool
 import os
 
 # Initialize LLM
@@ -30,7 +31,7 @@ async def generate_test_questions(
 ) -> List[Dict]:
     """
     Generate diverse test questions using LLM
-    
+
     Process:
     1. Get book content + concepts
     2. Get user's misconception history
@@ -40,34 +41,34 @@ async def generate_test_questions(
     """
     # Get user's weak concepts from misconception logs
     weak_concepts = await get_user_weak_concepts(user_id, book_id)
-    
+
     # Get all concepts from book paragraphs (only completed ones)
     all_concepts = await extract_concepts_from_book(book_id, user_id, chapter_id)
-    
+
     if not all_concepts:
         # Fallback: generate generic questions
         all_concepts = ["general concept 1", "general concept 2", "general concept 3"]
-    
+
     # Calculate distribution
     num_weak = min(int(count * 0.6), len(weak_concepts))
     num_general = count - num_weak
-    
+
     questions = []
-    
+
     # Generate questions from weak concepts (60%)
     for concept in weak_concepts[:num_weak]:
         question_type = _get_random_question_type()
         q = await generate_single_question(concept, question_type, "hard")
         if q:
             questions.append(q)
-    
+
     # Generate questions from general concepts (40%)
     for concept in random.sample(all_concepts, min(num_general, len(all_concepts))):
         question_type = _get_random_question_type()
         q = await generate_single_question(concept, question_type, "medium")
         if q:
             questions.append(q)
-    
+
     # Shuffle and limit
     random.shuffle(questions)
     return questions[:count]
@@ -106,7 +107,7 @@ Return ONLY valid JSON in this exact format (no markdown, no extra text):
 
 Make sure the question is clear, accurate, and at {difficulty} difficulty.
 """
-    
+
     elif question_type == "true_false":
         prompt = f"""
 Generate a true/false question about '{concept}' at {difficulty} difficulty level.
@@ -120,7 +121,7 @@ Return ONLY valid JSON in this exact format (no markdown, no extra text):
 
 The answer must be either "True" or "False".
 """
-    
+
     else:  # short_answer
         prompt = f"""
 Generate a short-answer question about '{concept}' at {difficulty} difficulty level.
@@ -132,13 +133,13 @@ Return ONLY valid JSON in this exact format (no markdown, no extra text):
   "key_points": ["key point 1", "key point 2"]
 }}
 """
-    
+
     try:
         response = await llm.ainvoke([
             SystemMessage(content="You are an expert test question generator. Return ONLY valid JSON."),
             HumanMessage(content=prompt)
         ])
-        
+
         import json
         # Clean up response
         content = response.content.strip()
@@ -148,17 +149,17 @@ Return ONLY valid JSON in this exact format (no markdown, no extra text):
             if content.startswith("json"):
                 content = content[4:]
         content = content.strip()
-        
+
         question_data = json.loads(content)
         question_data["question_type"] = question_type
         question_data["concept"] = concept
-        
+
         # Add options for T/F if not present
         if question_type == "true_false" and "options" not in question_data:
             question_data["options"] = ["True", "False"]
-        
+
         return question_data
-        
+
     except Exception as e:
         print(f"❌ Question generation failed for {concept}: {e}")
         return None
@@ -169,20 +170,22 @@ async def get_user_weak_concepts(user_id: str, book_id: str) -> List[str]:
     Get concepts user struggled with from review queue and misconceptions
     """
     weak = []
-    
+
     # From review queue (confused concepts)
     try:
-        result = supabase.table("review_queue") \
-            .select("concept") \
-            .eq("user_id", user_id) \
-            .eq("book_id", book_id) \
-            .execute()
-        
-        if result.data:
-            weak.extend([r["concept"] for r in result.data])
+        pool = await get_pool()
+        rows = await db_fetch(
+            pool,
+            "SELECT concept FROM review_queue WHERE user_id = $1 AND book_id = $2",
+            user_id,
+            book_id
+        )
+
+        if rows:
+            weak.extend([r["concept"] for r in rows])
     except Exception as e:
         print(f"⚠️ Could not fetch weak concepts: {e}")
-    
+
     return list(set(weak))  # Remove duplicates
 
 
@@ -191,52 +194,57 @@ async def extract_concepts_from_book(book_id: str, user_id: str, chapter_id: Opt
     Extract concepts from COMPLETED book paragraphs only
     """
     try:
+        pool = await get_pool()
+
         # First, get all completed paragraph IDs for this user in this book
-        progress_result = supabase.table("user_progress") \
-            .select("current_block_id") \
-            .eq("user_id", user_id) \
-            .eq("book_id", book_id) \
-            .eq("is_completed", True) \
-            .execute()
-        
-        if not progress_result.data:
+        progress_rows = await db_fetch(
+            pool,
+            "SELECT current_block_id FROM user_progress WHERE user_id = $1 AND book_id = $2 AND is_completed = TRUE",
+            user_id,
+            book_id
+        )
+
+        if not progress_rows:
             print(f"⚠️ No completed paragraphs found for user {user_id} in book {book_id}")
             return []
-        
-        completed_paragraph_ids = [p["current_block_id"] for p in progress_result.data]
+
+        completed_paragraph_ids = [p["current_block_id"] for p in progress_rows]
         print(f"✅ Found {len(completed_paragraph_ids)} completed paragraphs")
-        
+
         # If specific chapter requested, get its paragraphs and filter to completed ones
         if chapter_id:
-            query = supabase.table("paragraphs") \
-                .select("content, section_title") \
-                .eq("chapter_id", chapter_id) \
-                .in_("id", completed_paragraph_ids) \
-                .limit(20).execute()
+            para_rows = await db_fetch(
+                pool,
+                "SELECT content, section_title FROM paragraphs WHERE chapter_id = $1 AND id = ANY($2::uuid[]) LIMIT 20",
+                chapter_id,
+                completed_paragraph_ids
+            )
         else:
             # Get all chapters for this book first
-            chapters_result = supabase.table("chapters") \
-                .select("id") \
-                .eq("book_id", book_id) \
-                .execute()
-            
-            if not chapters_result.data:
+            chapter_rows = await db_fetch(
+                pool,
+                "SELECT id FROM chapters WHERE book_id = $1",
+                book_id
+            )
+
+            if not chapter_rows:
                 return []
-            
+
             # Get paragraphs from all chapters, filtered to completed ones only
-            chapter_ids = [c["id"] for c in chapters_result.data]
-            query = supabase.table("paragraphs") \
-                .select("content, section_title") \
-                .in_("chapter_id", chapter_ids) \
-                .in_("id", completed_paragraph_ids) \
-                .limit(20).execute()
-        
-        if not query.data:
+            chapter_ids = [c["id"] for c in chapter_rows]
+            para_rows = await db_fetch(
+                pool,
+                "SELECT content, section_title FROM paragraphs WHERE chapter_id = ANY($1::uuid[]) AND id = ANY($2::uuid[]) LIMIT 20",
+                chapter_ids,
+                completed_paragraph_ids
+            )
+
+        if not para_rows:
             return []
-        
+
         # Extract concepts from content and section titles
         concepts = []
-        for para in query.data:
+        for para in para_rows:
             # Prefer section titles as concepts
             if para.get("section_title"):
                 concepts.append(para["section_title"])
@@ -245,9 +253,9 @@ async def extract_concepts_from_book(book_id: str, user_id: str, chapter_id: Opt
                 content = para["content"][:100]
                 if len(content) > 10:
                     concepts.append(content)
-        
+
         return list(set(concepts))[:15]  # Deduplicate and limit for test generation
-        
+
     except Exception as e:
         print(f"⚠️ Could not extract concepts: {e}")
         return []

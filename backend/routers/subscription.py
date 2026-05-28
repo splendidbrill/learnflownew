@@ -5,7 +5,8 @@ Subscription Router - User balance and subscription purchase endpoints
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from db import supabase
+from db_helpers import db_fetch, db_fetchrow, db_execute, db_fetchval
+from db import get_pool
 
 router = APIRouter()
 
@@ -36,17 +37,20 @@ async def get_user_balance(user_id: str):
     This is a public endpoint (user can only fetch their own data).
     """
     try:
-        res = supabase.table("profiles").select(
-            "credits, subscription_tier, full_name"
-        ).eq("id", user_id).single().execute()
-        
-        if not res.data:
+        pool = await get_pool()
+        row = await db_fetchrow(
+            pool,
+            "SELECT credits, subscription_tier, full_name FROM profiles WHERE id = $1",
+            user_id
+        )
+
+        if not row:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         return {
-            "credits": res.data.get("credits", 0) or 0,
-            "subscription_tier": res.data.get("subscription_tier", "explorer"),
-            "full_name": res.data.get("full_name")
+            "credits": row.get("credits", 0) or 0,
+            "subscription_tier": row.get("subscription_tier", "explorer"),
+            "full_name": row.get("full_name")
         }
     except Exception as e:
         print(f"Error fetching user balance: {e}")
@@ -62,58 +66,64 @@ async def purchase_subscription(req: SubscriptionPurchaseRequest):
     # Validate tier
     if req.tier not in TIER_CREDIT_COSTS:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Invalid tier. Must be one of: {list(TIER_CREDIT_COSTS.keys())}"
         )
-    
+
     credit_cost = TIER_CREDIT_COSTS[req.tier]
-    
+
+    pool = await get_pool()
+
     # 1. Get current user profile
-    profile_res = supabase.table("profiles").select(
-        "credits, subscription_tier"
-    ).eq("id", req.user_id).single().execute()
-    
-    if not profile_res.data:
+    profile_row = await db_fetchrow(
+        pool,
+        "SELECT credits, subscription_tier FROM profiles WHERE id = $1",
+        req.user_id
+    )
+
+    if not profile_row:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    current_credits = profile_res.data.get("credits", 0) or 0
-    current_tier = profile_res.data.get("subscription_tier", "explorer")
-    
+
+    current_credits = profile_row.get("credits", 0) or 0
+    current_tier = profile_row.get("subscription_tier", "explorer")
+
     # 2. Check if user already has this tier or higher
     tier_order = ["explorer", "scholar", "master", "elite"]
     current_tier_index = tier_order.index(current_tier) if current_tier in tier_order else 0
     new_tier_index = tier_order.index(req.tier)
-    
+
     if new_tier_index <= current_tier_index:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"You already have {current_tier.upper()} tier or higher"
         )
-    
+
     # 3. Check if user has enough credits
     if current_credits < credit_cost:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Insufficient credits. Need {credit_cost}, have {current_credits}"
         )
-    
+
     # 4. Deduct credits and update subscription
     new_credits = current_credits - credit_cost
-    
-    supabase.table("profiles").update({
-        "credits": new_credits,
-        "subscription_tier": req.tier
-    }).eq("id", req.user_id).execute()
-    
+
+    await db_execute(
+        pool,
+        "UPDATE profiles SET credits = $1, subscription_tier = $2 WHERE id = $3",
+        new_credits, req.tier, req.user_id
+    )
+
     # 5. Log to credits_ledger
-    supabase.table("credits_ledger").insert({
-        "user_id": req.user_id,
-        "amount": -credit_cost,
-        "operation": "purchase",
-        "description": f"Purchased {req.tier.upper()} subscription",
-        "granted_by": req.user_id  # Self-purchase
-    }).execute()
-    
+    await db_execute(
+        pool,
+        """INSERT INTO credits_ledger (user_id, amount, operation, description, granted_by)
+           VALUES ($1, $2, $3, $4, $5)""",
+        req.user_id, -credit_cost, "purchase",
+        f"Purchased {req.tier.upper()} subscription",
+        req.user_id  # Self-purchase
+    )
+
     return {
         "status": "success",
         "new_tier": req.tier,

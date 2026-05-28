@@ -50,18 +50,23 @@ async def handle_telegram_start(chat_id: str, user_id: str):
     """
     Handle /start command from Telegram.
     Links the Telegram chat to the LearnFlow user.
-    
+
     Args:
         chat_id: Telegram chat ID
         user_id: LearnFlow user ID (from deep link parameter)
     """
-    from db import supabase
-    
+    from db_helpers import db_execute
+    from db import get_pool
+
     try:
         # Store chat_id in user profile
-        supabase.table("profiles").update({
-            "telegram_chat_id": chat_id
-        }).eq("id", user_id).execute()
+        pool = await get_pool()
+        await db_execute(
+            pool,
+            "UPDATE profiles SET telegram_chat_id = $1 WHERE id = $2",
+            chat_id,
+            user_id
+        )
         
         # Send confirmation message
         await send_telegram_message(

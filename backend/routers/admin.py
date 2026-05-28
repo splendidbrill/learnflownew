@@ -7,7 +7,8 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
-from db import supabase
+from db_helpers import db_fetch, db_fetchrow, db_execute, db_fetchval
+from db import get_pool
 import os
 
 router = APIRouter()
@@ -45,11 +46,12 @@ class LedgerEntry(BaseModel):
 
 async def verify_founder(admin_user_id: str):
     """Check if the requesting user is the founder"""
-    res = supabase.table("profiles").select("is_ultimate").eq("id", admin_user_id).single().execute()
-    
-    if not res.data or not res.data.get("is_ultimate"):
+    pool = await get_pool()
+    row = await db_fetchrow(pool, "SELECT is_ultimate FROM profiles WHERE id = $1", admin_user_id)
+
+    if not row or not row.get("is_ultimate"):
         raise HTTPException(status_code=403, detail="Access denied. Founder privileges required.")
-    
+
     return True
 
 # --- Endpoints ---
@@ -62,26 +64,31 @@ async def search_users(email: str, admin_id: str):
     Uses Supabase Admin API to list users.
     """
     await verify_founder(admin_id)
-    
+
     if len(email) < 2:
         return []
-    
+
     # Use Supabase Admin API to list users and filter by email
     # The service role key gives us access to auth.admin
     try:
+        from db import supabase
         # List all users (limited)
         auth_response = supabase.auth.admin.list_users()
-        
+
+        pool = await get_pool()
+
         # Filter users by email pattern
         matching_users = []
         for auth_user in auth_response:
             if email.lower() in auth_user.email.lower():
                 # Get profile data for this user
-                profile_res = supabase.table("profiles").select(
-                    "full_name, subscription_tier, credits, is_ultimate, xp"
-                ).eq("id", auth_user.id).single().execute()
-                
-                profile = profile_res.data or {}
+                profile_row = await db_fetchrow(
+                    pool,
+                    "SELECT full_name, subscription_tier, credits, is_ultimate, xp FROM profiles WHERE id = $1",
+                    auth_user.id
+                )
+
+                profile = dict(profile_row) if profile_row else {}
                 matching_users.append({
                     "id": auth_user.id,
                     "email": auth_user.email,
@@ -90,12 +97,12 @@ async def search_users(email: str, admin_id: str):
                     "credits": profile.get("credits", 0) or 0,
                     "is_ultimate": profile.get("is_ultimate", False)
                 })
-                
+
                 if len(matching_users) >= 10:
                     break
-        
+
         return matching_users
-        
+
     except Exception as e:
         print(f"Admin user search error: {e}")
         # Fallback: return empty if admin API fails
@@ -106,16 +113,20 @@ async def search_users(email: str, admin_id: str):
 async def get_user_details(user_id: str, admin_id: str):
     """Get detailed user info including credit balance and subscription"""
     await verify_founder(admin_id)
-    
+
+    pool = await get_pool()
+
     # Get profile data
-    profile_res = supabase.table("profiles").select(
-        "id, full_name, subscription_tier, credits, is_ultimate, xp, streak"
-    ).eq("id", user_id).single().execute()
-    
-    if not profile_res.data:
+    profile_row = await db_fetchrow(
+        pool,
+        "SELECT id, full_name, subscription_tier, credits, is_ultimate, xp, streak FROM profiles WHERE id = $1",
+        user_id
+    )
+
+    if not profile_row:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    return profile_res.data
+
+    return dict(profile_row)
 
 
 @router.post("/admin/credits/grant")
@@ -125,31 +136,34 @@ async def grant_credits(req: CreditOperation, admin_id: str):
     Only founder can perform this action.
     """
     await verify_founder(admin_id)
-    
+
     if req.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be positive")
-    
+
+    pool = await get_pool()
+
     # 1. Get current credits
-    profile_res = supabase.table("profiles").select("credits").eq("id", req.user_id).single().execute()
-    
-    if not profile_res.data:
+    profile_row = await db_fetchrow(pool, "SELECT credits FROM profiles WHERE id = $1", req.user_id)
+
+    if not profile_row:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    current_credits = profile_res.data.get("credits", 0) or 0
+
+    current_credits = profile_row.get("credits", 0) or 0
     new_credits = current_credits + req.amount
-    
+
     # 2. Update profile credits
-    supabase.table("profiles").update({"credits": new_credits}).eq("id", req.user_id).execute()
-    
+    await db_execute(pool, "UPDATE profiles SET credits = $1 WHERE id = $2", new_credits, req.user_id)
+
     # 3. Log to ledger
-    supabase.table("credits_ledger").insert({
-        "user_id": req.user_id,
-        "amount": req.amount,
-        "operation": "grant",
-        "description": req.description or f"Granted by founder",
-        "granted_by": admin_id
-    }).execute()
-    
+    await db_execute(
+        pool,
+        """INSERT INTO credits_ledger (user_id, amount, operation, description, granted_by)
+           VALUES ($1, $2, $3, $4, $5)""",
+        req.user_id, req.amount, "grant",
+        req.description or "Granted by founder",
+        admin_id
+    )
+
     return {
         "status": "success",
         "new_balance": new_credits,
@@ -164,31 +178,34 @@ async def revoke_credits(req: CreditOperation, admin_id: str):
     Only founder can perform this action.
     """
     await verify_founder(admin_id)
-    
+
     if req.amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be positive")
-    
+
+    pool = await get_pool()
+
     # 1. Get current credits
-    profile_res = supabase.table("profiles").select("credits").eq("id", req.user_id).single().execute()
-    
-    if not profile_res.data:
+    profile_row = await db_fetchrow(pool, "SELECT credits FROM profiles WHERE id = $1", req.user_id)
+
+    if not profile_row:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    current_credits = profile_res.data.get("credits", 0) or 0
+
+    current_credits = profile_row.get("credits", 0) or 0
     new_credits = max(0, current_credits - req.amount)  # Don't go negative
-    
+
     # 2. Update profile credits
-    supabase.table("profiles").update({"credits": new_credits}).eq("id", req.user_id).execute()
-    
+    await db_execute(pool, "UPDATE profiles SET credits = $1 WHERE id = $2", new_credits, req.user_id)
+
     # 3. Log to ledger
-    supabase.table("credits_ledger").insert({
-        "user_id": req.user_id,
-        "amount": -req.amount,
-        "operation": "revoke",
-        "description": req.description or f"Revoked by founder",
-        "granted_by": admin_id
-    }).execute()
-    
+    await db_execute(
+        pool,
+        """INSERT INTO credits_ledger (user_id, amount, operation, description, granted_by)
+           VALUES ($1, $2, $3, $4, $5)""",
+        req.user_id, -req.amount, "revoke",
+        req.description or "Revoked by founder",
+        admin_id
+    )
+
     return {
         "status": "success",
         "new_balance": new_credits,
@@ -203,25 +220,30 @@ async def change_subscription(req: SubscriptionChange, admin_id: str):
     Only founder can perform this action.
     """
     await verify_founder(admin_id)
-    
+
     valid_tiers = ["explorer", "scholar", "master", "elite"]
     if req.new_tier not in valid_tiers:
         raise HTTPException(status_code=400, detail=f"Invalid tier. Must be one of: {valid_tiers}")
-    
+
+    pool = await get_pool()
+
     # Update subscription
-    res = supabase.table("profiles").update({
-        "subscription_tier": req.new_tier
-    }).eq("id", req.user_id).execute()
-    
+    await db_execute(
+        pool,
+        "UPDATE profiles SET subscription_tier = $1 WHERE id = $2",
+        req.new_tier, req.user_id
+    )
+
     # Log to ledger as a special entry
-    supabase.table("credits_ledger").insert({
-        "user_id": req.user_id,
-        "amount": 0,
-        "operation": "grant",
-        "description": f"Subscription changed to {req.new_tier.upper()} by founder",
-        "granted_by": admin_id
-    }).execute()
-    
+    await db_execute(
+        pool,
+        """INSERT INTO credits_ledger (user_id, amount, operation, description, granted_by)
+           VALUES ($1, $2, $3, $4, $5)""",
+        req.user_id, 0, "grant",
+        f"Subscription changed to {req.new_tier.upper()} by founder",
+        admin_id
+    )
+
     return {
         "status": "success",
         "new_tier": req.new_tier
@@ -235,12 +257,16 @@ async def get_user_ledger(user_id: str, admin_id: str, limit: int = 20):
     Only founder can access this.
     """
     await verify_founder(admin_id)
-    
-    res = supabase.table("credits_ledger").select(
-        "id, amount, operation, description, created_at"
-    ).eq("user_id", user_id).order("created_at", desc=True).limit(limit).execute()
-    
-    return res.data or []
+
+    pool = await get_pool()
+    rows = await db_fetch(
+        pool,
+        """SELECT id, amount, operation, description, created_at
+           FROM credits_ledger WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2""",
+        user_id, limit
+    )
+
+    return [dict(r) for r in rows] if rows else []
 
 
 @router.get("/admin/all-users")
@@ -250,9 +276,12 @@ async def get_all_users(admin_id: str, limit: int = 50):
     Only founder can access this.
     """
     await verify_founder(admin_id)
-    
-    res = supabase.table("profiles").select(
-        "id, full_name, subscription_tier, credits, is_ultimate, xp"
-    ).limit(limit).execute()
-    
-    return res.data or []
+
+    pool = await get_pool()
+    rows = await db_fetch(
+        pool,
+        "SELECT id, full_name, subscription_tier, credits, is_ultimate, xp FROM profiles LIMIT $1",
+        limit
+    )
+
+    return [dict(r) for r in rows] if rows else []

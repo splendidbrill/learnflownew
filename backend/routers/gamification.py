@@ -6,7 +6,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
-from db import supabase
+from db_helpers import db_fetch, db_fetchrow, db_execute, db_fetchval
+from db import get_pool
 
 router = APIRouter(prefix="/api/gamification", tags=["gamification"])
 
@@ -65,32 +66,35 @@ async def check_and_award_badges(user_id: str):
     """
     Check if user earned new badges based on current stats
     """
+    pool = await get_pool()
+
     # Get user progress from user_progress table
-    progress_result = supabase.table("user_progress") \
-        .select("*") \
-        .eq("user_id", user_id) \
-        .eq("is_completed", True) \
-        .execute()
-    
-    completed_count = len(progress_result.data) if progress_result.data else 0
-    
+    progress_rows = await db_fetch(
+        pool,
+        "SELECT * FROM user_progress WHERE user_id = $1 AND is_completed = TRUE",
+        user_id
+    )
+
+    completed_count = len(progress_rows) if progress_rows else 0
+
     # Get existing badges
-    existing_badges = supabase.table("user_badges")\
-        .select("badge_type")\
-        .eq("user_id", user_id)\
-        .execute()
-    
-    existing_badge_types = {b["badge_type"] for b in (existing_badges.data or [])}
+    existing_badge_rows = await db_fetch(
+        pool,
+        "SELECT badge_type FROM user_badges WHERE user_id = $1",
+        user_id
+    )
+
+    existing_badge_types = {b["badge_type"] for b in (existing_badge_rows or [])}
     newly_awarded = []
-    
+
     # Check "first_steps" badge
     if completed_count >= 1 and "first_steps" not in existing_badge_types:
         await award_badge(user_id, "first_steps")
         newly_awarded.append("first_steps")
-    
+
     # Check "chapter_champion" - completed all paragraphs in a chapter
     # (This would need more complex logic checking chapter completion)
-    
+
     return {
         "newly_awarded": newly_awarded,
         "total_badges": len(existing_badge_types) + len(newly_awarded)
@@ -102,104 +106,118 @@ async def award_badge(user_id: str, badge_type: str):
     badge_info = BADGE_CRITERIA.get(badge_type)
     if not badge_info:
         return
-    
+
+    pool = await get_pool()
+
     # Insert badge
-    supabase.table("user_badges").insert({
-        "user_id": user_id,
-        "badge_type": badge_type,
-        "badge_name": badge_info["name"],
-        "badge_description": badge_info["description"]
-    }).execute()
-    
+    await db_execute(
+        pool,
+        """INSERT INTO user_badges (user_id, badge_type, badge_name, badge_description)
+           VALUES ($1, $2, $3, $4)""",
+        user_id, badge_type, badge_info["name"], badge_info["description"]
+    )
+
     # Award XP
     await add_xp(user_id, badge_info["xp_reward"])
 
 
 async def add_xp(user_id: str, xp_amount: int):
     """Add XP to user and check for level up"""
+    pool = await get_pool()
+
     # Get current level
-    level_result = supabase.table("user_levels")\
-        .select("*")\
-        .eq("user_id", user_id)\
-        .execute()
-    
-    if not level_result.data:
+    level_rows = await db_fetch(
+        pool,
+        "SELECT * FROM user_levels WHERE user_id = $1",
+        user_id
+    )
+
+    if not level_rows:
         # Create initial level record
-        supabase.table("user_levels").insert({
-            "user_id": user_id,
-            "level": 1,
-            "xp": xp_amount,
-            "next_level_xp": calculate_next_level_xp(1)
-        }).execute()
+        await db_execute(
+            pool,
+            """INSERT INTO user_levels (user_id, level, xp, next_level_xp)
+               VALUES ($1, $2, $3, $4)""",
+            user_id, 1, xp_amount, calculate_next_level_xp(1)
+        )
         return
-    
-    current = level_result.data[0]
+
+    current = level_rows[0]
     new_xp = current["xp"] + xp_amount
     current_level = current["level"]
     next_level_xp = current["next_level_xp"]
-    
+
     # Check for level up
     while new_xp >= next_level_xp:
         current_level += 1
         next_level_xp = calculate_next_level_xp(current_level)
-    
+
     # Update user level
-    supabase.table("user_levels").update({
-        "xp": new_xp,
-        "level": current_level,
-        "next_level_xp": next_level_xp,
-        "updated_at": datetime.now().isoformat()
-    }).eq("user_id", user_id).execute()
+    await db_execute(
+        pool,
+        """UPDATE user_levels
+           SET xp = $1, level = $2, next_level_xp = $3, updated_at = $4
+           WHERE user_id = $5""",
+        new_xp, current_level, next_level_xp, datetime.now().isoformat(), user_id
+    )
 
 
 @router.get("/leaderboard")
 async def get_leaderboard(limit: int = 10):
     """Get top performers from materialized view"""
+    pool = await get_pool()
+
     # Refresh materialized view
     try:
-        supabase.rpc("refresh_leaderboard").execute()
+        await db_execute(pool, "REFRESH MATERIALIZED VIEW leaderboard")
     except:
-        pass  # Materialized view might not support direct refresh via API
-    
-    result = supabase.table("leaderboard")\
-        .select("*")\
-        .limit(limit)\
-        .execute()
-    
-    return result.data or []
+        pass  # Materialized view might not support direct refresh or might not exist
+
+    rows = await db_fetch(
+        pool,
+        "SELECT * FROM leaderboard LIMIT $1",
+        limit
+    )
+
+    return [dict(r) for r in rows] if rows else []
 
 
 @router.get("/user-stats/{user_id}")
 async def get_user_stats(user_id: str):
     """Get complete user stats: level, XP, badges, progress"""
+    pool = await get_pool()
+
     # Get level
-    level_result = supabase.table("user_levels")\
-        .select("*")\
-        .eq("user_id", user_id)\
-        .execute()
-    
-    level_data = level_result.data[0] if level_result.data else {
+    level_rows = await db_fetch(
+        pool,
+        "SELECT * FROM user_levels WHERE user_id = $1",
+        user_id
+    )
+
+    level_data = dict(level_rows[0]) if level_rows else {
         "level": 1,
         "xp": 0,
         "next_level_xp": 100
     }
-    
+
     # Get badges
-    badges_result = supabase.table("user_badges")\
-        .select("*")\
-        .eq("user_id", user_id)\
-        .execute()
-    
+    badges_rows = await db_fetch(
+        pool,
+        "SELECT * FROM user_badges WHERE user_id = $1",
+        user_id
+    )
+
     # Get chapter progress
-    progress_result = supabase.table("chapter_progress")\
-        .select("*")\
-        .eq("user_id", user_id)\
-        .execute()
-    
+    progress_rows = await db_fetch(
+        pool,
+        "SELECT * FROM chapter_progress WHERE user_id = $1",
+        user_id
+    )
+
     return {
         "level": level_data,
-        "badges": badges_result.data or [],
-        "chapter_progress": progress_result.data or []
+        "badges": [dict(r) for r in badges_rows] if badges_rows else [],
+        "chapter_progress": [dict(r) for r in progress_rows] if progress_rows else []
     }
 
 
@@ -220,20 +238,28 @@ async def update_chapter_progress(
     total_concepts: Optional[int] = 0
 ):
     """Update chapter completion progress"""
-    supabase.table("chapter_progress").upsert({
-        "user_id": user_id,
-        "chapter_id": chapter_id,
-        "paragraphs_completed": paragraphs_completed,
-        "total_paragraphs": total_paragraphs,
-        "mastered_concepts": mastered_concepts,
-        "total_concepts": total_concepts,
-        "updated_at": datetime.now().isoformat()
-    }, on_conflict="user_id,chapter_id").execute()
-    
+    pool = await get_pool()
+
+    # Upsert: insert or update on conflict of (user_id, chapter_id)
+    await db_execute(
+        pool,
+        """INSERT INTO chapter_progress
+               (user_id, chapter_id, paragraphs_completed, total_paragraphs, mastered_concepts, total_concepts, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (user_id, chapter_id) DO UPDATE
+               SET paragraphs_completed = EXCLUDED.paragraphs_completed,
+                   total_paragraphs = EXCLUDED.total_paragraphs,
+                   mastered_concepts = EXCLUDED.mastered_concepts,
+                   total_concepts = EXCLUDED.total_concepts,
+                   updated_at = EXCLUDED.updated_at""",
+        user_id, chapter_id, paragraphs_completed, total_paragraphs,
+        mastered_concepts, total_concepts, datetime.now().isoformat()
+    )
+
     # Check if chapter is complete
     if paragraphs_completed >= total_paragraphs:
         # Award chapter completion badge
         await award_badge(user_id, "chapter_champion")
         await add_xp(user_id, 50)  # Bonus XP for completion
-    
+
     return {"success": True}

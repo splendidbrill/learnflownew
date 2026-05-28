@@ -1,7 +1,8 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 from datetime import datetime, timedelta
-from db import supabase
+from db_helpers import db_fetch, db_fetchrow, db_execute, db_fetchval
+from db import get_pool
 
 router = APIRouter()
 
@@ -24,31 +25,36 @@ async def check_in_streak(user_id: str):
     """
     now = datetime.now()
     today_str = now.date().isoformat()
-    
+
+    pool = await get_pool()
+
     # 1. Get current profile data
-    res = supabase.table("profiles").select("streak, last_visit").eq("id", user_id).single().execute()
-    
-    if not res.data:
+    row = await db_fetchrow(
+        pool,
+        "SELECT streak, last_visit FROM profiles WHERE id = $1",
+        user_id
+    )
+
+    if not row:
         # Create profile if missing (shouldn't happen for logged in user usually, but safe fallback)
         # Assuming triggers handle profile creation, but if not:
         return {"status": "profile_not_found"}
 
-    profile = res.data
-    current_streak = profile.get("streak", 0) or 0
-    last_visit_str = profile.get("last_visit")
-    
+    current_streak = row.get("streak", 0) or 0
+    last_visit_str = row.get("last_visit")
+
     # Defaults
     new_streak = 1
-    
+
     if last_visit_str:
         # Parse last_visit (handle potential Z or offset)
         try:
             # Simple date comparison
-            last_visit_date = datetime.fromisoformat(last_visit_str.replace('Z', '+00:00')).date()
+            last_visit_date = datetime.fromisoformat(str(last_visit_str).replace('Z', '+00:00')).date()
             current_date = now.date()
-            
+
             diff = (current_date - last_visit_date).days
-            
+
             if diff == 0:
                 # Already visited today
                 # FIX: If streak is 0 for some reason (e.g. first run logic fail), bump to 1
@@ -69,38 +75,42 @@ async def check_in_streak(user_id: str):
     else:
         # First visit ever
         new_streak = 1
-        
+
     # 2. Update DB
-    supabase.table("profiles").update({
-        "streak": new_streak,
-        "last_visit": now.isoformat()
-    }).eq("id", user_id).execute()
-    
+    await db_execute(
+        pool,
+        "UPDATE profiles SET streak = $1, last_visit = $2 WHERE id = $3",
+        new_streak, now.isoformat(), user_id
+    )
+
     return {"status": "updated", "streak": new_streak}
 
 @router.get("/stats/{user_id}", response_model=StatsResponse)
 async def get_user_stats(user_id: str):
+    pool = await get_pool()
+
     # --- 1. XP CALCULATION ---
     # Paragraphs: 10 XP each
-    para_res = supabase.table("paragraphs")\
-        .select("id", count="exact")\
-        .eq("is_completed", True)\
-        .execute() 
-        
-    para_count = para_res.count or 0
-    
+    para_count = await db_fetchval(
+        pool,
+        "SELECT COUNT(*) FROM paragraphs WHERE is_completed = TRUE"
+    ) or 0
+
     # Sessions: 50 XP each
-    sess_res = supabase.table("study_sessions").select("id", count="exact").eq("user_id", user_id).eq("status", "confirmed").execute()
-    sess_count = sess_res.count or 0
+    sess_count = await db_fetchval(
+        pool,
+        "SELECT COUNT(*) FROM study_sessions WHERE user_id = $1 AND status = $2",
+        user_id, "confirmed"
+    ) or 0
 
     total_xp = (para_count * 10) + (sess_count * 50)
 
     # --- 2. STREAK (Now from Profiles) ---
     streak = 0
     try:
-        prof_res = supabase.table("profiles").select("streak").eq("id", user_id).single().execute()
-        if prof_res.data:
-            streak = prof_res.data.get("streak", 0) or 0
+        prof_row = await db_fetchrow(pool, "SELECT streak FROM profiles WHERE id = $1", user_id)
+        if prof_row:
+            streak = prof_row.get("streak", 0) or 0
     except Exception as e:
         print(f"Error fetching streak: {e}")
 

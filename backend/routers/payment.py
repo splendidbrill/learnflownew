@@ -11,7 +11,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 import razorpay
-from db import supabase
+from db_helpers import db_fetch, db_fetchrow, db_execute, db_fetchval
+from db import get_pool
 
 router = APIRouter()
 
@@ -66,43 +67,53 @@ async def create_order(req: CreateOrderRequest):
     """
     if not client:
         raise HTTPException(status_code=500, detail="Payment gateway not configured")
-    
+
     if req.tier not in TIER_PRICES_INR or req.tier == "explorer":
         raise HTTPException(status_code=400, detail=f"Invalid tier: {req.tier}")
-    
+
+    pool = await get_pool()
+
     # Get user info
-    user_res = supabase.table("profiles").select("email, full_name, subscription_tier").eq("id", req.user_id).single().execute()
-    
-    if not user_res.data:
+    user_row = await db_fetchrow(
+        pool,
+        "SELECT email, full_name, subscription_tier FROM profiles WHERE id = $1",
+        req.user_id
+    )
+
+    if not user_row:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    current_tier = user_res.data.get("subscription_tier", "explorer")
-    
+
+    current_tier = user_row.get("subscription_tier", "explorer")
+
     # Check for downgrade (not allowed)
     current_idx = TIER_ORDER.index(current_tier)
     target_idx = TIER_ORDER.index(req.tier)
-    
+
     if target_idx <= current_idx:
         raise HTTPException(status_code=400, detail=f"Cannot downgrade. You already have {current_tier.upper()} tier or higher")
-    
+
     # Check for pending payments for same tier (prevent double payment)
-    pending_res = supabase.table("payments").select("id").eq("user_id", req.user_id).eq("tier", req.tier).eq("status", "pending").execute()
-    
-    if pending_res.data and len(pending_res.data) > 0:
+    pending_rows = await db_fetch(
+        pool,
+        "SELECT id FROM payments WHERE user_id = $1 AND tier = $2 AND status = $3",
+        req.user_id, req.tier, "pending"
+    )
+
+    if pending_rows and len(pending_rows) > 0:
         raise HTTPException(status_code=400, detail="You already have a pending payment for this tier. Please complete or cancel it first.")
-    
+
     # Calculate pro-rata upgrade price (pay the difference)
     current_price = TIER_PRICES_INR.get(current_tier, 0)
     target_price = TIER_PRICES_INR[req.tier]
     upgrade_amount = target_price - current_price
-    
+
     if upgrade_amount <= 0:
         raise HTTPException(status_code=400, detail="Invalid upgrade amount")
-    
+
     # Create Razorpay order
     try:
         upgrade_desc = f"Upgrade: {TIER_LABELS.get(current_tier, current_tier)} → {TIER_LABELS[req.tier]}"
-        
+
         order_data = {
             "amount": upgrade_amount,
             "currency": "INR",
@@ -114,19 +125,17 @@ async def create_order(req: CreateOrderRequest):
                 "description": upgrade_desc
             }
         }
-        
+
         order = client.order.create(data=order_data)
-        
+
         # Store pending order in database
-        supabase.table("payments").insert({
-            "user_id": req.user_id,
-            "razorpay_order_id": order["id"],
-            "amount": upgrade_amount,
-            "currency": "INR",
-            "tier": req.tier,
-            "status": "pending"
-        }).execute()
-        
+        await db_execute(
+            pool,
+            """INSERT INTO payments (user_id, razorpay_order_id, amount, currency, tier, status)
+               VALUES ($1, $2, $3, $4, $5, $6)""",
+            req.user_id, order["id"], upgrade_amount, "INR", req.tier, "pending"
+        )
+
         return {
             "order_id": order["id"],
             "amount": upgrade_amount,
@@ -137,11 +146,11 @@ async def create_order(req: CreateOrderRequest):
             "name": "LearnFlow",
             "description": upgrade_desc,
             "prefill": {
-                "name": user_res.data.get("full_name", ""),
-                "email": user_res.data.get("email", "")
+                "name": user_row.get("full_name", ""),
+                "email": user_row.get("email", "")
             }
         }
-        
+
     except Exception as e:
         print(f"❌ Razorpay order creation failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to create payment order")
@@ -151,14 +160,16 @@ async def create_order(req: CreateOrderRequest):
 async def verify_payment(req: VerifyPaymentRequest):
     """
     Verify Razorpay payment signature and upgrade subscription.
-    
+
     SECURITY: This uses HMAC-SHA256 signature verification.
     The signature is created by Razorpay using YOUR secret key.
     Only this backend (with the secret) can verify it - cannot be forged.
     """
     if not client:
         raise HTTPException(status_code=500, detail="Payment gateway not configured")
-    
+
+    pool = await get_pool()
+
     # 1. Verify signature using HMAC-SHA256
     # Signature = HMAC-SHA256(order_id + "|" + payment_id, secret)
     message = f"{req.razorpay_order_id}|{req.razorpay_payment_id}"
@@ -167,53 +178,62 @@ async def verify_payment(req: VerifyPaymentRequest):
         message.encode(),
         hashlib.sha256
     ).hexdigest()
-    
+
     if expected_signature != req.razorpay_signature:
         print(f"❌ Signature mismatch! Expected: {expected_signature[:20]}..., Got: {req.razorpay_signature[:20]}...")
-        
+
         # Update payment status to failed
-        supabase.table("payments").update({
-            "status": "signature_failed"
-        }).eq("razorpay_order_id", req.razorpay_order_id).execute()
-        
+        await db_execute(
+            pool,
+            "UPDATE payments SET status = $1 WHERE razorpay_order_id = $2",
+            "signature_failed", req.razorpay_order_id
+        )
+
         raise HTTPException(status_code=400, detail="Payment verification failed - invalid signature")
-    
+
     # 2. Verify order exists and is pending
-    payment_res = supabase.table("payments").select("*").eq("razorpay_order_id", req.razorpay_order_id).single().execute()
-    
-    if not payment_res.data:
+    payment_row = await db_fetchrow(
+        pool,
+        "SELECT * FROM payments WHERE razorpay_order_id = $1",
+        req.razorpay_order_id
+    )
+
+    if not payment_row:
         raise HTTPException(status_code=404, detail="Order not found")
-    
-    if payment_res.data.get("status") == "paid":
-        return {"status": "already_processed", "tier": payment_res.data.get("tier")}
-    
+
+    if payment_row.get("status") == "paid":
+        return {"status": "already_processed", "tier": payment_row.get("tier")}
+
     # 3. Update payment record
-    supabase.table("payments").update({
-        "razorpay_payment_id": req.razorpay_payment_id,
-        "status": "paid",
-        "paid_at": datetime.now().isoformat()
-    }).eq("razorpay_order_id", req.razorpay_order_id).execute()
-    
+    await db_execute(
+        pool,
+        "UPDATE payments SET razorpay_payment_id = $1, status = $2, paid_at = $3 WHERE razorpay_order_id = $4",
+        req.razorpay_payment_id, "paid", datetime.now().isoformat(), req.razorpay_order_id
+    )
+
     # 4. Upgrade user subscription
-    supabase.table("profiles").update({
-        "subscription_tier": req.tier
-    }).eq("id", req.user_id).execute()
-    
+    await db_execute(
+        pool,
+        "UPDATE profiles SET subscription_tier = $1 WHERE id = $2",
+        req.tier, req.user_id
+    )
+
     # 5. Log to credits_ledger for audit (non-critical, don't fail payment if this fails)
-    amount_inr = payment_res.data.get("amount", 0) / 100  # Convert paise to rupees
+    amount_inr = payment_row.get("amount", 0) / 100  # Convert paise to rupees
     try:
-        supabase.table("credits_ledger").insert({
-            "user_id": req.user_id,
-            "amount": 0,
-            "operation": "purchase",
-            "description": f"Razorpay: Paid ₹{amount_inr:.0f} for {req.tier.upper()} subscription",
-            "granted_by": req.user_id
-        }).execute()
+        await db_execute(
+            pool,
+            """INSERT INTO credits_ledger (user_id, amount, operation, description, granted_by)
+               VALUES ($1, $2, $3, $4, $5)""",
+            req.user_id, 0, "purchase",
+            f"Razorpay: Paid ₹{amount_inr:.0f} for {req.tier.upper()} subscription",
+            req.user_id
+        )
     except Exception as ledger_err:
         print(f"⚠️ Credits ledger logging failed (non-critical): {ledger_err}")
-    
+
     print(f"✅ Payment verified! User {req.user_id[:8]}... upgraded to {req.tier}")
-    
+
     return {
         "status": "success",
         "message": f"Successfully upgraded to {req.tier.upper()}!",

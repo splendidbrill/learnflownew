@@ -6,7 +6,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime, timedelta
-from db import supabase
+from db_helpers import db_fetch, db_fetchrow, db_execute, db_fetchval
+from db import get_pool
 
 router = APIRouter()
 
@@ -66,72 +67,88 @@ class RateLimitCheckResponse(BaseModel):
 
 # --- Helper Functions ---
 
-def get_user_tier(user_id: str) -> str:
+async def get_user_tier(pool, user_id: str) -> str:
     """Get user's subscription tier from profiles table."""
     try:
-        res = supabase.table("profiles").select("subscription_tier").eq("id", user_id).single().execute()
-        if res.data:
-            return res.data.get("subscription_tier", "explorer") or "explorer"
+        row = await db_fetchrow(pool, "SELECT subscription_tier FROM profiles WHERE id = $1", user_id)
+        if row:
+            return row.get("subscription_tier", "explorer") or "explorer"
     except:
         pass
     return "explorer"
 
-def get_subject_count(user_id: str) -> int:
+async def get_subject_count(pool, user_id: str) -> int:
     """Count user's subjects/courses."""
     try:
-        res = supabase.table("courses").select("id", count="exact").eq("user_id", user_id).execute()
-        return res.count or 0
+        count = await db_fetchval(pool, "SELECT COUNT(*) FROM courses WHERE user_id = $1", user_id)
+        return count or 0
     except:
         return 0
 
-def get_books_this_month(user_id: str) -> int:
+async def get_books_this_month(pool, user_id: str) -> int:
     """Count books created this month."""
     try:
         start_of_month = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        res = supabase.table("course_books").select("id", count="exact").eq("user_id", user_id).gte("created_at", start_of_month.isoformat()).execute()
-        return res.count or 0
+        count = await db_fetchval(
+            pool,
+            "SELECT COUNT(*) FROM course_books WHERE user_id = $1 AND created_at >= $2",
+            user_id, start_of_month.isoformat()
+        )
+        return count or 0
     except:
         return 0
 
-def get_diagrams_this_hour(user_id: str) -> int:
+async def get_diagrams_this_hour(pool, user_id: str) -> int:
     """Count diagram analyses in the last hour."""
     try:
         one_hour_ago = (datetime.now() - timedelta(hours=1)).isoformat()
-        res = supabase.table("diagram_usage").select("id", count="exact").eq("user_id", user_id).gte("created_at", one_hour_ago).execute()
-        return res.count or 0
+        count = await db_fetchval(
+            pool,
+            "SELECT COUNT(*) FROM diagram_usage WHERE user_id = $1 AND created_at >= $2",
+            user_id, one_hour_ago
+        )
+        return count or 0
     except:
         return 0
 
-def get_diagrams_this_month(user_id: str) -> int:
+async def get_diagrams_this_month(pool, user_id: str) -> int:
     """Count diagram analyses this month."""
     try:
         start_of_month = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        res = supabase.table("diagram_usage").select("id", count="exact").eq("user_id", user_id).gte("created_at", start_of_month.isoformat()).execute()
-        return res.count or 0
+        count = await db_fetchval(
+            pool,
+            "SELECT COUNT(*) FROM diagram_usage WHERE user_id = $1 AND created_at >= $2",
+            user_id, start_of_month.isoformat()
+        )
+        return count or 0
     except:
         return 0
 
-def get_lessons_today(user_id: str) -> int:
+async def get_lessons_today(pool, user_id: str) -> int:
     """Count lessons/study sessions today."""
     try:
         today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        res = supabase.table("study_sessions").select("id", count="exact").eq("user_id", user_id).gte("created_at", today_start.isoformat()).execute()
-        return res.count or 0
+        count = await db_fetchval(
+            pool,
+            "SELECT COUNT(*) FROM study_sessions WHERE user_id = $1 AND created_at >= $2",
+            user_id, today_start.isoformat()
+        )
+        return count or 0
     except:
         return 0
 
-def get_usage_count(user_id: str, feature: str) -> int:
+async def get_usage_count(pool, user_id: str, feature: str) -> int:
     """Get current usage count for a feature."""
     if feature == "subjects":
-        return get_subject_count(user_id)
+        return await get_subject_count(pool, user_id)
     elif feature == "books_per_month":
-        return get_books_this_month(user_id)
+        return await get_books_this_month(pool, user_id)
     elif feature == "diagrams_per_hour":
-        return get_diagrams_this_hour(user_id)
+        return await get_diagrams_this_hour(pool, user_id)
     elif feature == "diagrams_per_month":
-        return get_diagrams_this_month(user_id)
+        return await get_diagrams_this_month(pool, user_id)
     elif feature == "lessons_per_day":
-        return get_lessons_today(user_id)
+        return await get_lessons_today(pool, user_id)
     return 0
 
 # --- Endpoints ---
@@ -144,16 +161,17 @@ async def check_rate_limit(req: RateLimitCheckRequest) -> RateLimitCheckResponse
     """
     if req.feature not in FEATURE_NAMES:
         raise HTTPException(status_code=400, detail=f"Invalid feature. Must be one of: {list(FEATURE_NAMES.keys())}")
-    
-    tier = get_user_tier(req.user_id)
+
+    pool = await get_pool()
+    tier = await get_user_tier(pool, req.user_id)
     limits = FEATURE_LIMITS.get(tier, FEATURE_LIMITS["explorer"])
     limit = limits.get(req.feature, 0)
-    
-    current_usage = get_usage_count(req.user_id, req.feature)
-    
+
+    current_usage = await get_usage_count(pool, req.user_id, req.feature)
+
     # -1 means unlimited
     can_use = limit == -1 or current_usage < limit
-    
+
     return RateLimitCheckResponse(
         can_use=can_use,
         current_usage=current_usage,
@@ -168,12 +186,13 @@ async def get_all_usage(user_id: str):
     Get all usage counts for a user across all features.
     Useful for displaying usage dashboard.
     """
-    tier = get_user_tier(user_id)
+    pool = await get_pool()
+    tier = await get_user_tier(pool, user_id)
     limits = FEATURE_LIMITS.get(tier, FEATURE_LIMITS["explorer"])
-    
+
     usage = {}
     for feature in FEATURE_NAMES.keys():
-        current = get_usage_count(user_id, feature)
+        current = await get_usage_count(pool, user_id, feature)
         limit = limits.get(feature, 0)
         usage[feature] = {
             "current": current,
@@ -182,7 +201,7 @@ async def get_all_usage(user_id: str):
             "can_use": limit == -1 or current < limit,
             "is_unlimited": limit == -1
         }
-    
+
     return {
         "tier": tier,
         "usage": usage
@@ -206,10 +225,12 @@ async def track_diagram_usage(user_id: str):
     Call this when user analyzes a diagram.
     """
     try:
-        supabase.table("diagram_usage").insert({
-            "user_id": user_id,
-            "created_at": datetime.now().isoformat()
-        }).execute()
+        pool = await get_pool()
+        await db_execute(
+            pool,
+            "INSERT INTO diagram_usage (user_id, created_at) VALUES ($1, $2)",
+            user_id, datetime.now().isoformat()
+        )
         return {"status": "tracked"}
     except Exception as e:
         print(f"Error tracking diagram usage: {e}")
