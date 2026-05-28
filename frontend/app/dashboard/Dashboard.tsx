@@ -108,7 +108,18 @@ useEffect(() => {
 
     // 1. Fetch GLOBAL XP and Subscription Tier from backend profile API
     try {
-      const profileRes = await fetch(`${API_URL}/profile/${user.id}`);
+      let profileRes = await fetch(`${API_URL}/profile/${user.id}`);
+
+      // Auto-create profile if it doesn't exist yet (first login)
+      if (!profileRes.ok) {
+        await fetch(`${API_URL}/profile/${user.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: user.email, full_name: user.user_metadata?.full_name || '' })
+        });
+        profileRes = await fetch(`${API_URL}/profile/${user.id}`);
+      }
+
       const profile = profileRes.ok ? await profileRes.json() : null;
 
       // Set subscription tier
