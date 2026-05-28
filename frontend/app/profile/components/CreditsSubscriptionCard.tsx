@@ -24,7 +24,7 @@ export default function CreditsSubscriptionCard({ userId }: CreditsSubscriptionC
   useEffect(() => {
     const fetchBalance = async () => {
       try {
-        const res = await fetch(`${API_URL}/api/user/balance/${userId}`);
+        const res = await fetch(`${API_URL}/user/balance/${userId}`);
         if (res.ok) {
           const data = await res.json();
           setCredits(data.credits || 0);

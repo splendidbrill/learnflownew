@@ -38,7 +38,7 @@ export default function ReviewQueue() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      const response = await fetch(`${API_URL}/api/reviews/queue/${user.id}`);
+      const response = await fetch(`${API_URL}/reviews/queue/${user.id}`);
       const data = await response.json();
       setReviews(data.reviews || []);
     } catch (error) {
@@ -76,7 +76,7 @@ export default function ReviewQueue() {
 
       setPlayingAudio(reviewId);
 
-      const response = await fetch(`${API_URL}/api/tts`, {
+      const response = await fetch(`${API_URL}/tts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text })
@@ -106,7 +106,7 @@ export default function ReviewQueue() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      await fetch(`${API_URL}/api/reviews/complete`, {
+      await fetch(`${API_URL}/reviews/complete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -129,7 +129,7 @@ export default function ReviewQueue() {
       if (!user) return;
 
       // Use the new endpoint that returns a PNG image directly
-      const qrUrl = `${API_URL}/api/user/telegram-qr/${user.id}`;
+      const qrUrl = `${API_URL}/user/telegram-qr/${user.id}`;
       setQRCodeUrl(qrUrl);
       setShowQRModal(true);
     } catch (error) {

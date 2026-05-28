@@ -138,7 +138,7 @@ export default function PricingPage({ user }: PricingPageProps) {
   useEffect(() => {
     const fetchBalance = async () => {
       try {
-        const res = await fetch(`${API_URL}/api/user/balance/${user.id}`);
+        const res = await fetch(`${API_URL}/user/balance/${user.id}`);
         if (res.ok) {
           const data = await res.json();
           setCredits(data.credits || 0);
@@ -183,7 +183,7 @@ export default function PricingPage({ user }: PricingPageProps) {
       }
 
       // 2. Create order on backend
-      const orderRes = await fetch(`${API_URL}/api/payment/create-order`, {
+      const orderRes = await fetch(`${API_URL}/payment/create-order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -213,7 +213,7 @@ export default function PricingPage({ user }: PricingPageProps) {
         handler: async (response: any) => {
           // 4. Verify payment on backend
           try {
-            const verifyRes = await fetch(`${API_URL}/api/payment/verify`, {
+            const verifyRes = await fetch(`${API_URL}/payment/verify`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({

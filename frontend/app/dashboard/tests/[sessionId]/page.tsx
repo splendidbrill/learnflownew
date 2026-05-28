@@ -44,7 +44,7 @@ export default function TestDetailsPage() {
 
   const fetchTestDetails = async () => {
     try {
-      const response = await fetch(`${API_URL}/api/tests/session/${sessionId}`);
+      const response = await fetch(`${API_URL}/tests/session/${sessionId}`);
       if (!response.ok) throw new Error("Failed to fetch test details");
 
       const data = await response.json();

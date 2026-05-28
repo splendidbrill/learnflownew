@@ -223,26 +223,23 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   const fetchBookData = async () => {
     if (!bookId) return;
 
-    // Fetch Book
-    const { data: bookData } = await supabase
-      .from("course_books")
-      .select("*")
-      .eq("id", bookId)
-      .single();
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 
-    if (bookData) {
+    // Fetch Book
+    const bookRes = await fetch(`${API_URL}/books/${bookId}`);
+    if (bookRes.ok) {
+      const bookData = await bookRes.json();
       setBook(bookData);
       setBookStatus(bookData.status || "pending");
     }
 
     // Fetch Chapters
-    const { data: chapterData } = await supabase
-      .from("chapters")
-      .select("*")
-      .eq("book_id", bookId)
-      .order("order_index", { ascending: true });
+    const chaptersRes = await fetch(`${API_URL}/chapters/${bookId}`);
+    if (chaptersRes.ok) {
+      const chapterData = await chaptersRes.json();
+      setChapters(chapterData);
+    }
 
-    if (chapterData) setChapters(chapterData);
     setIsLoadingData(false);
   };
 
@@ -516,7 +513,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     const [hour, minute] = time.split(':').map(Number);
 
     try {
-      await fetch(`${API_URL}/api/schedule/create`, {
+      await fetch(`${API_URL}/schedule/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -549,7 +546,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     setBookStatus("processing");
 
     try {
-      const response = await fetch(`${API_URL}/api/ingest`, {
+      const response = await fetch(`${API_URL}/ingest`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -576,7 +573,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
       // Get current user for saving to DB
       const { data: { user: currentUser } } = await supabase.auth.getUser();
 
-      const res = await fetch(`${API_URL}/api/analyze-image`, {
+      const res = await fetch(`${API_URL}/analyze-image`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -611,7 +608,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
       // Save diagram explanation to database so it persists after refresh
       if (currentUser?.id && selectedChapter && data.explanation) {
         console.log("💾 Saving Diagram Explanation to DB...");
-        await fetch(`${API_URL}/api/chat-logs`, {
+        await fetch(`${API_URL}/chat-logs`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -639,7 +636,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     setParagraphs([]); // <--- Clear old data to prevent early exit
 
     try {
-      await fetch(`${API_URL}/api/generate_chapter`, {
+      await fetch(`${API_URL}/generate_chapter`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chapterId: selectedChapter.id }),
@@ -692,7 +689,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     if (!confirm("Are you sure you want to turn off alerts for this book?")) return;
 
     try {
-      const response = await fetch(`${API_URL}/api/schedule/delete/${user.id}/${book.id}`, {
+      const response = await fetch(`${API_URL}/schedule/delete/${user.id}/${book.id}`, {
         method: "DELETE",
       });
 
@@ -747,7 +744,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
       // 3. SAVE USER MESSAGE TO DB (AWAIT THIS!)
       console.log("💾 Saving User Message...");
-      const userMsgRes = await fetch(`${API_URL}/api/chat-logs`, {
+      const userMsgRes = await fetch(`${API_URL}/chat-logs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -767,7 +764,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
       }
 
       // 4. CALL AI
-      const response = await fetch(`${API_URL}/api/chat`, {
+      const response = await fetch(`${API_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -821,7 +818,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
       // 6. SAVE AI RESPONSE TO DB (AWAIT THIS!)
       if (accumulatedText.trim()) {
         console.log("💾 Saving AI Message...");
-        const aiMsgRes = await fetch(`${API_URL}/api/chat-logs`, {
+        const aiMsgRes = await fetch(`${API_URL}/chat-logs`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -871,7 +868,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
       console.log(`Skipping noise: ${nextPara.content.substring(0, 20)}...`);
 
       // Mark noise as completed in DB immediately (Background fire-and-forget)
-      fetch(`${API_URL}/api/user-progress`, {
+      fetch(`${API_URL}/user-progress`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1008,7 +1005,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     console.log("👤 User found:", currentUser.id);
 
     // 2. Try to Save progress via backend API
-    const progressRes = await fetch(`${API_URL}/api/user-progress`, {
+    const progressRes = await fetch(`${API_URL}/user-progress`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1029,7 +1026,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
     // 3. Save XP via profile API
     const newXp = (userXp || 0) + 10;
-    const xpRes = await fetch(`${API_URL}/api/profile/${currentUser.id}`, {
+    const xpRes = await fetch(`${API_URL}/profile/${currentUser.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ xp: newXp })
@@ -1061,7 +1058,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
       // 3. CALL AGENTIC PIPELINE (Parser → Personalizer → Strategist → Evaluator)
       console.log("🧠 Calling Agentic Pipeline...");
-      const response = await fetch(`${API_URL}/api/explain-agentic`, {
+      const response = await fetch(`${API_URL}/explain-agentic`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1089,7 +1086,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
       // 5. SAVE TO DATABASE via backend API
       if (data.explanation) {
         console.log("💾 Saving Agentic Explanation to DB...");
-        const saveRes = await fetch(`${API_URL}/api/chat-logs`, {
+        const saveRes = await fetch(`${API_URL}/chat-logs`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1127,7 +1124,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
-        await fetch(`${API_URL}/api/user-progress`, {
+        await fetch(`${API_URL}/user-progress`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1155,7 +1152,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
     try {
       if (feedbackType === 'confused') {
-        await fetch(`${API_URL}/api/misconception/log`, {
+        await fetch(`${API_URL}/misconception/log`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1168,7 +1165,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
         });
 
         // Add to review queue
-        await fetch(`${API_URL}/api/reviews/add`, {
+        await fetch(`${API_URL}/reviews/add`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1183,7 +1180,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
         console.log("📊 Logged misconception + added to review queue");
       } else {
-        await fetch(`${API_URL}/api/misconception/success`, {
+        await fetch(`${API_URL}/misconception/success`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1751,7 +1748,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
     try {
       // 3. Call API
-      const res = await fetch(`${API_URL}/api/speak`, {
+      const res = await fetch(`${API_URL}/speak`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

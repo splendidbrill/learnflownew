@@ -48,7 +48,7 @@ export default function TestPage() {
         return;
       }
 
-      const response = await fetch(`${API_URL}/api/tests/generate`, {
+      const response = await fetch(`${API_URL}/tests/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -102,7 +102,7 @@ export default function TestPage() {
         answer: answers[idx] || "",
       }));
 
-      const response = await fetch(`${API_URL}/api/tests/submit`, {
+      const response = await fetch(`${API_URL}/tests/submit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

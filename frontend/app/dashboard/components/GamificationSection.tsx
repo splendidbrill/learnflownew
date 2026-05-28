@@ -22,7 +22,7 @@ export function GamificationSection({ userId }: GamificationSectionProps) {
 
   const fetchGamificationData = async () => {
     try {
-      const response = await fetch(`${API_URL}/api/gamification/user-stats/${userId}`);
+      const response = await fetch(`${API_URL}/gamification/user-stats/${userId}`);
       if (response.ok) {
         const result = await response.json();
         setData(result);

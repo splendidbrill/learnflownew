@@ -37,7 +37,7 @@ export function useRateLimit(userId: string): UseRateLimitReturn {
     setError(null);
 
     try {
-      const res = await fetch(`${API_URL}/api/rate-limit/check`, {
+      const res = await fetch(`${API_URL}/rate-limit/check`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id: userId, feature }),
@@ -72,7 +72,7 @@ export function useRateLimit(userId: string): UseRateLimitReturn {
  */
 export async function trackDiagramUsage(userId: string): Promise<boolean> {
   try {
-    const res = await fetch(`${API_URL}/api/rate-limit/track-diagram/${userId}`, {
+    const res = await fetch(`${API_URL}/rate-limit/track-diagram/${userId}`, {
       method: "POST",
     });
     return res.ok;

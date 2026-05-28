@@ -89,7 +89,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
     setIsSearching(true);
     try {
       // Call backend API which searches auth.users by email
-      const res = await fetch(`${API_URL}/api/admin/users?email=${encodeURIComponent(searchQuery)}&admin_id=${user.id}`);
+      const res = await fetch(`${API_URL}/admin/users?email=${encodeURIComponent(searchQuery)}&admin_id=${user.id}`);
       
       if (!res.ok) throw new Error('Search failed');
       
@@ -114,7 +114,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
   // Fetch user ledger
   const fetchLedger = async (userId: string) => {
     try {
-      const res = await fetch(`${API_URL}/api/admin/ledger/${userId}?admin_id=${user.id}`);
+      const res = await fetch(`${API_URL}/admin/ledger/${userId}?admin_id=${user.id}`);
       if (res.ok) {
         const data = await res.json();
         setLedgerEntries(data);
@@ -173,7 +173,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ user }) => {
     
     setIsLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/admin/subscription/change?admin_id=${user.id}`, {
+      const res = await fetch(`${API_URL}/admin/subscription/change?admin_id=${user.id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

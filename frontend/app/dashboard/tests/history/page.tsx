@@ -44,7 +44,7 @@ export default function TestHistoryPage() {
       }
 
       // Fetch test history
-      const response = await fetch(`${API_URL}/api/tests/history/${user.id}?limit=20`);
+      const response = await fetch(`${API_URL}/tests/history/${user.id}?limit=20`);
       if (!response.ok) throw new Error("Failed to fetch test history");
       
       const testData = await response.json();

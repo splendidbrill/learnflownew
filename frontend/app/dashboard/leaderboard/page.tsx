@@ -23,7 +23,7 @@ export default function LeaderboardPage() {
 
   const fetchLeaderboard = async () => {
     try {
-      const response = await fetch(`${API_URL}/api/gamification/leaderboard?limit=20`);
+      const response = await fetch(`${API_URL}/gamification/leaderboard?limit=20`);
       if (!response.ok) throw new Error("Failed to fetch leaderboard");
       
       const data = await response.json();
