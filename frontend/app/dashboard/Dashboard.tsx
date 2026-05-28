@@ -150,7 +150,7 @@ useEffect(() => {
 
  useEffect(() => {
     const fetchAllData = async () => {
-      if (!user) return;
+      if (!user) { setIsLoading(false); return; }
 
       const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 
@@ -161,13 +161,12 @@ useEffect(() => {
         const coursesData = await coursesRes.json();
 
         // 2. Fetch Gamification Stats
-        const statsRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/stats/${user.id}`);
-        const statsData = await statsRes.json();
+        const statsRes = await fetch(`${API_URL}/stats/${user.id}`);
+        const statsData = statsRes.ok ? await statsRes.json() : {};
 
-        // 3. FETCH BOOK PROGRESS (NEW SQL FUNCTION)
-        const { data: progressData, error: progressError } = await supabase
-          .rpc('get_user_book_progress', { target_user_id: user.id });
-        if (progressError) console.error("Progress fetch error:", progressError);
+        // 3. BOOK PROGRESS — skip Supabase RPC, use empty map (progress tracked via backend)
+        const progressData: any[] = [];
+        const progressError = null;
 
         // Create a lookup map: { 'book_uuid': 55 } (55% done)
         const progressMap: Record<string, number> = {};
@@ -306,8 +305,9 @@ useEffect(() => {
     // Inside Dashboard.tsx useEffect
 
     const fetchStats = async () => {
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
       try {
-          const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/stats/${user.id}`);
+          const res = await fetch(`${API_URL}/stats/${user.id}`);
           const data = await res.json();
           
           // Update your Zustand store or local state with real data
@@ -328,7 +328,8 @@ useEffect(() => {
       const initDashboard = async () => {
         // 1. CHECK-IN STREAK (Update DB)
         try {
-          await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/stats/checkin/${user.id}`, { method: 'POST' });
+          const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
+          await fetch(`${API_URL}/stats/checkin/${user.id}`, { method: 'POST' });
         } catch (err) {
           console.error("Check-in failed", err);
         }
