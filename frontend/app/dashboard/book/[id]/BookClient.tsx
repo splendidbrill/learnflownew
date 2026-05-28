@@ -644,29 +644,24 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
       // Poll for Status & Progress
       const interval = setInterval(async () => {
-        // 1. Check Chapter Status (Progress)
-        const { data: chapData } = await supabase
-          .from("chapters")
-          .select("status")
-          .eq("id", selectedChapter.id)
-          .single();
+        const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 
-        console.log("📊 Frontend Polling Status:", chapData?.status); // DEBUG LOG
+        // 1. Check Chapter Status via backend
+        const chapRes = await fetch(`${API}/chapters/${book?.id}`);
+        const chapList = chapRes.ok ? await chapRes.json() : [];
+        const chapData = chapList.find((c: any) => c.id === selectedChapter.id);
+
+        console.log("📊 Frontend Polling Status:", chapData?.status);
 
         if (chapData?.status && chapData.status.startsWith("processing_")) {
           const percent = parseInt(chapData.status.split("_")[1]);
-          console.log("   --> Parsed Percent:", percent); // DEBUG LOG
           if (!isNaN(percent)) setChapterGenProgress(percent);
         }
 
-        // 2. Check if Paragraphs are done (Standard Check)
-        const { data } = await supabase
-          .from("paragraphs")
-          .select("*")
-          .eq("chapter_id", selectedChapter.id)
-          .order("order_index", { ascending: true });
+        // 2. Check paragraphs via backend
+        const paraRes = await fetch(`${API}/paragraphs/${selectedChapter.id}`);
+        const data = paraRes.ok ? await paraRes.json() : [];
 
-        // Only stop if explicitly completed OR we have data and status is NOT processing
         const isStillProcessing = chapData?.status?.startsWith("processing");
 
         if (chapData?.status === "completed" || (data && data.length > 5 && !isStillProcessing)) {
@@ -675,7 +670,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
           setChapterGenProgress(0);
           clearInterval(interval);
         }
-      }, 1000); // Poll every 1s for smoother bar
+      }, 3000); // Poll every 3s
     } catch (e: any) {
       alert("Error: " + e.message);
       setIsGenerating(false);
