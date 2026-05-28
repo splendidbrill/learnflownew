@@ -80,7 +80,7 @@ async def check_in_streak(user_id: str):
     await db_execute(
         pool,
         "UPDATE profiles SET streak = $1, last_visit = $2 WHERE id = $3",
-        new_streak, now.isoformat(), user_id
+        new_streak, now, user_id
     )
 
     return {"status": "updated", "streak": new_streak}
