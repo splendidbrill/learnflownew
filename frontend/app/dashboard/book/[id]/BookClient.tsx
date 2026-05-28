@@ -611,11 +611,15 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
       // Save diagram explanation to database so it persists after refresh
       if (currentUser?.id && selectedChapter && data.explanation) {
         console.log("💾 Saving Diagram Explanation to DB...");
-        await supabase.from("chat_logs").insert({
-          chapter_id: selectedChapter.id,
-          user_id: currentUser.id,
-          role: "assistant",
-          content: data.explanation,
+        await fetch(`${API_URL}/api/chat-logs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: currentUser.id,
+            chapter_id: selectedChapter.id,
+            role: 'assistant',
+            content: data.explanation,
+          })
         });
         console.log("✅ Diagram Explanation Saved!");
       }
@@ -743,16 +747,21 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
       // 3. SAVE USER MESSAGE TO DB (AWAIT THIS!)
       console.log("💾 Saving User Message...");
-      const { error: userMsgError } = await supabase.from("chat_logs").insert({
-        chapter_id: selectedChapter.id,
-        user_id: currentUser.id,
-        role: "user",
-        content: userText,
+      const userMsgRes = await fetch(`${API_URL}/api/chat-logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: currentUser.id,
+          chapter_id: selectedChapter.id,
+          role: 'user',
+          content: userText,
+        })
       });
 
-      if (userMsgError) {
-        console.error("❌ User Save Failed:", userMsgError);
-        throw userMsgError; // Stop if we can't save
+      if (!userMsgRes.ok) {
+        const err = await userMsgRes.json().catch(() => ({}));
+        console.error("❌ User Save Failed:", err);
+        throw new Error(err.detail || 'Failed to save user message');
       } else {
         console.log("✅ User Message Saved");
       }
@@ -812,14 +821,18 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
       // 6. SAVE AI RESPONSE TO DB (AWAIT THIS!)
       if (accumulatedText.trim()) {
         console.log("💾 Saving AI Message...");
-        const { error: aiMsgError } = await supabase.from("chat_logs").insert({
-          chapter_id: selectedChapter.id,
-          user_id: currentUser.id,
-          role: "assistant",
-          content: accumulatedText,
+        const aiMsgRes = await fetch(`${API_URL}/api/chat-logs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: currentUser.id,
+            chapter_id: selectedChapter.id,
+            role: 'assistant',
+            content: accumulatedText,
+          })
         });
 
-        if (aiMsgError) console.error("❌ AI Save Failed:", aiMsgError);
+        if (!aiMsgRes.ok) console.error("❌ AI Save Failed:", await aiMsgRes.json().catch(() => ({})));
         else console.log("✅ AI Message Saved");
       }
     } catch (error: any) {
@@ -857,20 +870,16 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     ) {
       console.log(`Skipping noise: ${nextPara.content.substring(0, 20)}...`);
 
-      // Mark noise as completed in DB immediately (Background)
-      supabase
-        .from("user_progress")
-        .upsert(
-          {
-            user_id: user.id,
-            book_id: bookId,
-            current_block_id: nextPara.id,
-            is_completed: true,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "user_id, book_id, current_block_id" },
-        )
-        .then(); // .then() to fire-and-forget
+      // Mark noise as completed in DB immediately (Background fire-and-forget)
+      fetch(`${API_URL}/api/user-progress`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: user.id,
+          book_id: bookId,
+          current_block_id: nextPara.id,
+        })
+      }).catch(err => console.error('Failed to save noise progress:', err));
 
       // Update Local State for the skipped item
       setParagraphs((prev) =>
@@ -998,36 +1007,34 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
     console.log("👤 User found:", currentUser.id);
 
-    // 2. Try to Save
-    const { data, error } = await supabase
-      .from("user_progress")
-      .upsert(
-        {
-          user_id: currentUser.id,
-          book_id: bookId,
-          current_block_id: blockId,
-          is_completed: true,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "user_id, book_id, current_block_id" },
-      )
-      .select();
+    // 2. Try to Save progress via backend API
+    const progressRes = await fetch(`${API_URL}/api/user-progress`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_id: currentUser.id,
+        book_id: bookId,
+        current_block_id: blockId,
+      })
+    });
 
-    if (error) {
-      alert(`❌ DB ERROR: ${error.message}`);
-      console.error("Supabase Error:", error);
+    if (!progressRes.ok) {
+      const err = await progressRes.json().catch(() => ({}));
+      alert(`❌ DB ERROR: ${err.detail || 'Failed to save progress'}`);
+      console.error("Progress Save Error:", err);
     } else {
+      const data = await progressRes.json();
       console.log("✅ SAVE SUCCESSFUL:", data);
-      // alert("✅ Progress Saved to DB!"); // Uncomment this to verify success visually
     }
 
-    // 3. Save XP
+    // 3. Save XP via profile API
     const newXp = (userXp || 0) + 10;
-    const { error: xpError } = await supabase
-      .from("profiles")
-      .update({ xp: newXp })
-      .eq("id", currentUser.id);
-    if (xpError) console.error("XP Error:", xpError);
+    const xpRes = await fetch(`${API_URL}/api/profile/${currentUser.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ xp: newXp })
+    });
+    if (!xpRes.ok) console.error("XP Error:", await xpRes.json().catch(() => ({})));
 
     fetchStats();
   };
@@ -1079,17 +1086,21 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
         { id: aiMessageId, role: "assistant", content: data.explanation },
       ]);
 
-      // 5. SAVE TO DATABASE
+      // 5. SAVE TO DATABASE via backend API
       if (data.explanation) {
         console.log("💾 Saving Agentic Explanation to DB...");
-        const { error } = await supabase.from("chat_logs").insert({
-          chapter_id: selectedChapter!.id,
-          user_id: currentUser.id,
-          role: "assistant",
-          content: data.explanation,
+        const saveRes = await fetch(`${API_URL}/api/chat-logs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: currentUser.id,
+            chapter_id: selectedChapter!.id,
+            role: 'assistant',
+            content: data.explanation,
+          })
         });
 
-        if (error) console.error("❌ Save Failed:", error.message);
+        if (!saveRes.ok) console.error("❌ Save Failed:", await saveRes.json().catch(() => ({})));
         else console.log("✅ Agentic Explanation Saved!");
       }
     } catch (e) {
@@ -1112,15 +1123,18 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
       })
     );
 
-    // Sync with DB
+    // Sync with DB via backend API
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
-        await supabase.from("user_progress").upsert({
-          user_id: user.id,
-          current_block_id: paraId,
-          is_completed: true,
-          last_accessed: new Date().toISOString()
+        await fetch(`${API_URL}/api/user-progress`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: user.id,
+            book_id: bookId,
+            current_block_id: paraId,
+          })
         });
         // Re-fetch progress to double check
         fetchStats(user.id);

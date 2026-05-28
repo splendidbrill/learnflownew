@@ -104,28 +104,32 @@ useEffect(() => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    // 1. Fetch GLOBAL XP and Subscription Tier from Profiles
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('xp, subscription_tier')
-      .eq('id', user.id)
-      .single();
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 
-    // Set subscription tier
-    if (profile?.subscription_tier) {
-      setSubscriptionTier(profile.subscription_tier);
+    // 1. Fetch GLOBAL XP and Subscription Tier from backend profile API
+    try {
+      const profileRes = await fetch(`${API_URL}/profile/${user.id}`);
+      const profile = profileRes.ok ? await profileRes.json() : null;
+
+      // Set subscription tier
+      if (profile?.subscription_tier) {
+        setSubscriptionTier(profile.subscription_tier);
+      }
+
+      // 2. Fetch Counts from courses response (books counted from nested course_books)
+      const coursesRes = await fetch(`${API_URL}/courses?user_id=${user.id}`);
+      const coursesData = coursesRes.ok ? await coursesRes.json() : [];
+      const totalBooks = (coursesData || []).reduce((sum: number, c: any) => sum + (c.course_books?.length || 0), 0);
+
+      setUserMetrics({
+        xp: profile?.xp || 0,
+        streak: 0, // Placeholder for now
+        totalBooks,
+        totalSubjects: (coursesData || []).length
+      });
+    } catch (err) {
+      console.error('Failed to fetch global stats:', err);
     }
-
-    // 2. Fetch Counts
-    const { count: books } = await supabase.from('course_books').select('*', { count: 'exact', head: true });
-    const { count: subjects } = await supabase.from('subjects').select('*', { count: 'exact', head: true });
-
-    setUserMetrics({
-      xp: profile?.xp || 0,
-      streak: 0, // Placeholder for now
-      totalBooks: books || 0,
-      totalSubjects: subjects || 0
-    });
   };
 
   fetchGlobalStats();
@@ -137,15 +141,13 @@ useEffect(() => {
     const fetchAllData = async () => {
       if (!user) return;
 
-      try {
-        // 1. Fetch Subjects & Books
-        const { data: coursesData, error } = await supabase
-          .from('courses')
-          .select(`*, course_books(*)`)
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: true });
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 
-        if (error) throw error;
+      try {
+        // 1. Fetch Subjects & Books from backend API
+        const coursesRes = await fetch(`${API_URL}/courses?user_id=${user.id}`);
+        if (!coursesRes.ok) throw new Error('Failed to fetch courses');
+        const coursesData = await coursesRes.json();
 
         // 2. Fetch Gamification Stats
         const statsRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/stats/${user.id}`);
@@ -154,9 +156,6 @@ useEffect(() => {
         // 3. FETCH BOOK PROGRESS (NEW SQL FUNCTION)
         const { data: progressData, error: progressError } = await supabase
           .rpc('get_user_book_progress', { target_user_id: user.id });
-
-          
-
         if (progressError) console.error("Progress fetch error:", progressError);
 
         // Create a lookup map: { 'book_uuid': 55 } (55% done)
@@ -251,13 +250,11 @@ useEffect(() => {
 
   useEffect(() => {
     const fetchData = async () => {
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
       try {
-        const { data, error } = await supabase
-          .from('courses')
-          .select(`*, course_books(*)`) // <--- CHANGE 1: Fetch from new table
-          .order('created_at', { ascending: true });
-
-        if (error) throw error;
+        const res = await fetch(`${API_URL}/courses?user_id=${user.id}`);
+        if (!res.ok) throw new Error('Failed to fetch courses');
+        const data = await res.json();
 
         if (data) {
           const formattedSubjects: Subject[] = data.map((s: any) => ({
@@ -267,9 +264,9 @@ useEffect(() => {
             color: s.color,
             description: s.description,
             created_at: s.created_at,
-            // CHANGE 2: Map 'course_books' to 'bookCount'
+            // Map 'course_books' to 'bookCount'
             bookCount: s.course_books ? s.course_books.length : 0,
-            // CHANGE 3: Map 'course_books' to 'recentBooks'
+            // Map 'course_books' to 'recentBooks'
             recentBooks: s.course_books ? s.course_books.map((b: any) => ({
               id: b.id,
               title: b.title,
@@ -344,65 +341,70 @@ useEffect(() => {
 
   const handleAddSubject = async (data: { name: string; color: string; description: string }) => {
     console.log("Attempting to save subject:", data);
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 
     // 1. EDIT MODE
     if (editingSubject) {
-      const { error } = await supabase
-      .from('courses')
-        .update({ 
-          name: data.name, 
-          color: data.color, 
-          description: data.description 
-        })
-        .eq('id', editingSubject.id);
-        
-      if (error) {
+      try {
+        const res = await fetch(`${API_URL}/courses/${editingSubject.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: data.name, color: data.color, description: data.description })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || 'Failed to update subject');
+        }
+      } catch (error: any) {
         console.error("Error updating subject:", error);
         alert(`Failed to update subject: ${error.message}`);
-        return; 
+        return;
       }
 
       // Safe update using Partial<Subject>
       updateSubject(editingSubject.id, data);
       setEditingSubject(null);
       setIsSubjectModalOpen(false);
-    } 
+    }
     // 2. CREATE MODE
     else {
-      // NOTE: If this fails with "cache" errors, change 'subjects' to 'learning_subjects'
-      const { data: newSubject, error } = await supabase
-        .from('courses')
-        .insert([{ 
-            name: data.name, 
-            description: data.description,
-            color: data.color, 
-            user_id: user.id 
-        }])
-        .select()
-        .single();
-        
-      if (error) {
-        console.error("Error creating subject:", error);
-        alert(`Failed to create subject: ${error.message} (Check console for details)`);
-        return; 
-      }
-
-      if (newSubject) {
-        // Construct the full Subject object for the store
-        const subjectToAdd: Subject = {
-            id: newSubject.id,
+      try {
+        const res = await fetch(`${API_URL}/courses`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
             user_id: user.id,
-            created_at: newSubject.created_at,
             name: data.name,
             description: data.description,
-            color: data.color,
-            bookCount: 0,
-            recentBooks: [],
-            isActive: false,
-            progress: 0
-        };
-        addSubject(subjectToAdd); 
-        setIsSubjectModalOpen(false); 
+            color: data.color
+          })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || 'Failed to create subject');
+        }
+        const newSubject = await res.json();
+
+        if (newSubject) {
+          // Construct the full Subject object for the store
+          const subjectToAdd: Subject = {
+              id: newSubject.id,
+              user_id: user.id,
+              created_at: newSubject.created_at,
+              name: data.name,
+              description: data.description,
+              color: data.color,
+              bookCount: 0,
+              recentBooks: [],
+              isActive: false,
+              progress: 0
+          };
+          addSubject(subjectToAdd);
+          setIsSubjectModalOpen(false);
+        }
+      } catch (error: any) {
+        console.error("Error creating subject:", error);
+        alert(`Failed to create subject: ${error.message}`);
       }
     }
   };
@@ -487,42 +489,34 @@ useEffect(() => {
   };
 
   const handleConfirmDelete = async () => {
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
     try {
       if (deleteConfirm.type === 'subject' && deleteConfirm.id) {
-        // 1. Send Delete Request to Database
-        const { error } = await supabase
-          .from('courses') // Make sure this matches your DB table name
-          .delete()
-          .eq('id', deleteConfirm.id);
-        
-        if (error) {
-           console.error("Database Delete Failed:", error);
-           throw error; // This jumps to the catch block
+        // 1. Send Delete Request to backend API
+        const res = await fetch(`${API_URL}/courses/${deleteConfirm.id}`, { method: 'DELETE' });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || 'Failed to delete subject');
         }
 
-        // 2. Only update UI if Database succeeded
+        // 2. Only update UI if delete succeeded
         deleteSubject(deleteConfirm.id);
-      } 
+      }
       else if (deleteConfirm.type === 'book' && deleteConfirm.id && deleteConfirm.subjectId) {
-        // First, delete all related study_sessions to avoid foreign key constraint violation
-        const { error: sessionsError } = await supabase
-          .from('study_sessions')
-          .delete()
-          .eq('book_id', deleteConfirm.id);
-        
-        if (sessionsError) {
-          console.error("Failed to delete study sessions:", sessionsError);
-          throw sessionsError;
+        // First, delete all related study_sessions via backend API
+        const sessionsRes = await fetch(`${API_URL}/study-sessions/book/${deleteConfirm.id}`, { method: 'DELETE' });
+        if (!sessionsRes.ok) {
+          const err = await sessionsRes.json().catch(() => ({}));
+          throw new Error(err.detail || 'Failed to delete study sessions');
         }
 
         // Then delete the book itself
-        const { error } = await supabase
-          .from('course_books')
-          .delete()
-          .eq('id', deleteConfirm.id);
-          
-        if (error) throw error;
-        
+        const bookRes = await fetch(`${API_URL}/books/${deleteConfirm.id}`, { method: 'DELETE' });
+        if (!bookRes.ok) {
+          const err = await bookRes.json().catch(() => ({}));
+          throw new Error(err.detail || 'Failed to delete book');
+        }
+
         deleteBook(deleteConfirm.subjectId, deleteConfirm.id);
       }
     } catch (error: any) {

@@ -1,6 +1,5 @@
 "use client";
 import React, { useState, useEffect } from "react";
-import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
 import { User } from "@supabase/supabase-js";
 import { Sidebar } from "@/app/dashboard/Sidebar"; // Adjusted path
@@ -17,7 +16,6 @@ import {
 import CreditsSubscriptionCard from "./CreditsSubscriptionCard";
 
 export default function ProfileForm({ user }: { user: User }) {
-  const supabase = createClient();
   const router = useRouter();
   
   const [loading, setLoading] = useState(false);
@@ -37,12 +35,10 @@ export default function ProfileForm({ user }: { user: User }) {
 
   useEffect(() => {
     const getProfile = async () => {
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
       try {
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', user.id)
-          .single();
+        const res = await fetch(`${API_URL}/profile/${user.id}`);
+        const data = res.ok ? await res.json() : null;
 
         if (data) {
           setFormData({
@@ -69,7 +65,7 @@ export default function ProfileForm({ user }: { user: User }) {
     };
 
     getProfile();
-  }, [user, supabase]);
+  }, [user]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -78,17 +74,22 @@ export default function ProfileForm({ user }: { user: User }) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 
     try {
-      const { error } = await supabase
-        .from('profiles')
-        .upsert({
-          id: user.id,
+      const res = await fetch(`${API_URL}/profile/${user.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           ...formData,
           updated_at: new Date().toISOString(),
-        });
+        })
+      });
 
-      if (error) throw error;
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to save profile');
+      }
       setShowSuccessModal(true);
     } catch (error) {
       console.error("Error saving profile:", error);

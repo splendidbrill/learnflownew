@@ -28,7 +28,7 @@ from db_helpers import db_fetch, db_fetchrow, db_execute, db_fetchval
 from services.vision_service import analyze_diagram, describe_image, is_valid_diagram
 from services.mermaid_service import generate_concept_diagram, personalize_image_explanation
 from services.s3_service import upload_file_to_s3, get_cloudfront_url
-from routers import scheduler, stats, admin, subscription, rate_limits, payment, contact
+from routers import scheduler, stats, admin, subscription, rate_limits, payment, contact, data
 
 # 1. Load Env
 env_path = Path(__file__).parent / '.env'
@@ -52,6 +52,7 @@ app.include_router(subscription.router, prefix="/api")
 app.include_router(rate_limits.router, prefix="/api")
 app.include_router(payment.router, prefix="/api")
 app.include_router(contact.router, prefix="/api")
+app.include_router(data.router, prefix="/api")
 
 # --- 3. SETUP TEXT BRAIN (DeepSeek via Azure) ---
 text_base_url = os.getenv("AZURE_TEXT_BASE_URL")

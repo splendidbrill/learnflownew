@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { X, Upload, Book, AlertCircle } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client'; // Adjust path if needed
 import { Book as BookType } from '../types'; // Adjust path to your types
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 
 interface AddBookModalProps {
   isOpen: boolean;
@@ -22,8 +23,6 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
   onAdd,
   initialData
 }) => {
-  const supabase = createClient();
-  
   // --- STATE DEFINITIONS ---
   const [title, setTitle] = useState('');
   const [author, setAuthor] = useState('');
@@ -52,73 +51,39 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
     }
   }, [isOpen, initialData]);
 
-  // --- CUSTOM UPLOAD WITH PROGRESS ---
-  const uploadFileWithProgress = async (file: File, path: string): Promise<void> => {
-    return new Promise(async (resolve, reject) => {
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session) throw new Error("No session");
+  // --- UPLOAD FILE VIA BACKEND API WITH PROGRESS ---
+  const uploadFileWithProgress = async (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('user_id', user.id);
 
-        const projectId = process.env.NEXT_PUBLIC_SUPABASE_URL?.split('//')[1].split('.')[0];
-        // Use standard Supabase Storage API Endpoint
-        const url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/books/${path}`;
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_URL}/upload-pdf`);
 
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', url); // Storage usually uses POST for new files
+      // Progress Event
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percentComplete = Math.round((event.loaded / event.total) * 100);
+          setProgress(percentComplete);
+        }
+      };
 
-        // Headers
-        xhr.setRequestHeader('Authorization', `Bearer ${session.access_token}`);
-        xhr.setRequestHeader('x-upsert', 'true'); // Allow overwriting
-
-        // Progress Event
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable) {
-            const percentComplete = Math.round((event.loaded / event.total) * 100);
-            setProgress(percentComplete);
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const result = JSON.parse(xhr.responseText);
+            resolve(result.file_url);
+          } catch {
+            reject(new Error('Invalid response from upload API'));
           }
-        };
+        } else {
+          reject(new Error(`Upload failed: ${xhr.statusText}`));
+        }
+      };
 
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            resolve();
-          } else {
-            reject(new Error(`Upload failed: ${xhr.statusText}`));
-          }
-        };
-
-        xhr.onerror = () => reject(new Error("Network Error"));
-        
-        // Send actual form data via binary body
-        const formData = new FormData();
-        formData.append('', file); 
-        // Note: For Supabase raw binary upload is often simpler if supported, 
-        // but 'multipart/form-data' is standard. 
-        // Actually, Supabase Storage API expects RAW BINARY body for this specific endpoint structure if simple.
-        // Let's rely on standard FormData behavior which might add boundaries.
-        // BETTER APPROACH:
-        // Use the native supabase-js client but 'patch' it? No.
-        // Let's use the XHR with FormData exactly how Supabase expects.
-        
-        // Supabase expects FormData with 'cacheControl', 'upsert' etc fields, AND the file.
-        // Key must be valid.
-        
-        // SIMPLIFICATION:
-        // Just send the file as the body and set Content-Type to the file type.
-        // This is effectively a TUS or S3 direct upload style.
-        // But Supabase storage-api (PostgREST style) handles FormData.
-        
-        // Let's try the safest "Raw Binary" approach which works well with /object/ routes
-        // provided the headers are right.
-        
-        // Actually, a simpler way for REACT code:
-        // Just send `file` as the body. 
-        // Content-Type should be the file's type.
-        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-        xhr.send(file);
-        
-      } catch (err) {
-        reject(err);
-      }
+      xhr.onerror = () => reject(new Error("Network Error"));
+      xhr.send(formData);
     });
   };
 
@@ -139,20 +104,9 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
     try {
       let fileUrl = initialData?.fileUrl;
 
-      // 1. Upload File (if new file selected)
+      // 1. Upload File via backend API (if new file selected)
       if (file) {
-        const fileExt = file.name.split('.').pop();
-        const fileName = `${user.id}/${Math.random()}.${fileExt}`;
-        
-        // --- CUSTOM UPLOAD ---
-        await uploadFileWithProgress(file, fileName);
-        
-        // Get Public URL
-        const { data: urlData } = supabase.storage
-          .from('books')
-          .getPublicUrl(fileName);
-          
-        fileUrl = urlData.publicUrl;
+        fileUrl = await uploadFileWithProgress(file);
       }
 
       // DO NOT COMBINE: Domain + Analogy (User requested separation)
@@ -162,32 +116,37 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
         title,
         author,
         description: domain, // Use domain as description for cards
-        subject_id: subjectId, 
+        subject_id: subjectId,
         user_id: user.id,
         file_url: fileUrl,
-        analogy_topic: finalAnalogyTopic 
+        analogy_topic: finalAnalogyTopic
       };
 
       let resultBook;
 
-      // 2. Insert/Update in 'course_books'
+      // 2. Insert/Update via backend API
       if (initialData) {
-        const { data, error } = await supabase
-          .from('course_books')
-          .update(bookData)
-          .eq('id', initialData.id)
-          .select()
-          .single();
-        if (error) throw error;
-        resultBook = data;
+        const res = await fetch(`${API_URL}/books/${initialData.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(bookData)
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || 'Failed to update book');
+        }
+        resultBook = await res.json();
       } else {
-        const { data, error } = await supabase
-          .from('course_books')
-          .insert([bookData])
-          .select()
-          .single();
-        if (error) throw error;
-        resultBook = data;
+        const res = await fetch(`${API_URL}/books`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(bookData)
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || 'Failed to create book');
+        }
+        resultBook = await res.json();
       }
 
       // 3. Update UI
@@ -196,7 +155,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
         title: resultBook.title,
         author: resultBook.author,
         description: resultBook.description,
-        color: '#fbbf24', 
+        color: '#fbbf24',
         fileUrl: resultBook.file_url,
         analogy_topic: resultBook.analogy_topic
       };
