@@ -149,8 +149,8 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-[#1e0a3c] border border-white/10 rounded-2xl w-full max-w-md shadow-2xl p-5 relative">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200 overflow-y-auto">
+      <div className="bg-[#1e0a3c] border border-white/10 rounded-2xl w-full max-w-md shadow-2xl p-5 relative my-auto max-h-[90vh] overflow-y-auto">
         {/* Close Button */}
         <button
           onClick={onClose}
