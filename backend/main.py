@@ -1476,6 +1476,13 @@ async def process_chapter_content(chapter_id: str):
 
         await db_execute(pool, "DELETE FROM paragraphs WHERE chapter_id = $1", chapter_id)
 
+        # Move the progress bar off 0% during the (potentially long) image
+        # extraction phase that happens before OCR begins.
+        try:
+            await db_execute(pool, "UPDATE chapters SET status = $1 WHERE id = $2", "processing_3", chapter_id)
+        except Exception:
+            pass
+
         # ============================================================
         # CONFIGURATION BASED ON BOOK TYPE
         # ============================================================
