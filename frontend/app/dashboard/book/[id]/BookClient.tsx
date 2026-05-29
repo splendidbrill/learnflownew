@@ -259,7 +259,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
       if (!selectedChapter) return;
 
       // 1. Fetch raw content from Backend API
-      let filteredRaw = [];
+      let filteredRaw: Paragraph[] = [];
       try {
         const paraRes = await fetch(`${API_URL}/paragraphs/${selectedChapter.id}`);
         if (paraRes.ok) {
