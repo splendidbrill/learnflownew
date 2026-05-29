@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import React, { useEffect, useState, useRef } from "react";
 import { Suspense } from "react";
@@ -170,28 +170,24 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     }
     if (!uid) return;
 
-    // 2. Count TOTAL paragraphs in book
-    const { count: total } = await supabase
-      .from("paragraphs")
-      .select("*", { count: "exact", head: true })
-      .eq("book_id", bookId);
-
-    // 3. Count COMPLETED paragraphs for USER in THIS BOOK
-    const { count: completed } = await supabase
-      .from("user_progress")
-      .select("*", { count: "exact", head: true })
-      .eq("book_id", bookId)
-      .eq("user_id", uid)
-      .eq("is_completed", true);
-
-    // 4. Update UI
-    if (total && total > 0) {
-      setBookProgress(Math.round(((completed || 0) / total) * 100));
+    // 2 & 3 & 4. Get progress from Backend API instead of Supabase
+    let completed = 0;
+    try {
+      const res = await fetch(`${API_URL}/book-progress/${bookId}/${uid}`);
+      if (res.ok) {
+        const data = await res.json();
+        completed = data.completed || 0;
+        if (data.total && data.total > 0) {
+          setBookProgress(Math.round((completed / data.total) * 100));
+        }
+      }
+    } catch (e) {
+      console.error("Error fetching book progress:", e);
     }
 
     // --- CALCULATE BOOK XP (Local) ---
     // 10 XP per completed paragraph
-    const localXp = (completed || 0) * 10;
+    const localXp = completed * 10;
     setBookLevelXp(localXp);
   };
 
@@ -262,33 +258,29 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
     const loadParagraphs = async () => {
       if (!selectedChapter) return;
 
-      // 1. Fetch raw content
-      const { data: rawParagraphs, error: paraError } = await supabase
-        .from("paragraphs")
-        .select("*")
-        .eq("chapter_id", selectedChapter.id)
-        .order("order_index", { ascending: true });
+      // 1. Fetch raw content from Backend API
+      let filteredRaw = [];
+      try {
+        const paraRes = await fetch(`${API_URL}/paragraphs/${selectedChapter.id}`);
+        if (paraRes.ok) {
+          filteredRaw = await paraRes.json() || [];
+        }
+      } catch (e) {
+        console.error("Error fetching paragraphs:", e);
+        return;
+      }
 
-      if (paraError) return;
-
-      const filteredRaw = rawParagraphs || [];
-
-
-      // 2. Fetch User Progress
+      // 2. Fetch User Progress from Backend API
       let completedIds = new Set();
       if (user) {
-        const { data: progressData } = await supabase
-          .from("user_progress")
-          .select("current_block_id")
-          .eq("user_id", user.id)
-          .eq("is_completed", true)
-          .in(
-            "current_block_id",
-            filteredRaw.map((p) => p.id),
-          );
-
-        if (progressData) {
-          progressData.forEach((p) => completedIds.add(p.current_block_id));
+        try {
+          const progRes = await fetch(`${API_URL}/user-progress/completed/${bookId}/${user.id}`);
+          if (progRes.ok) {
+            const completedArray = await progRes.json();
+            completedArray.forEach((id: string) => completedIds.add(id));
+          }
+        } catch (e) {
+          console.error("Error fetching user progress:", e);
         }
       }
 
@@ -341,33 +333,31 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   useEffect(() => {
     const loadChatHistory = async () => {
       // 1. Strict Guard: Don't fetch if no chapter or no user
-      if (!selectedChapter?.id) return;
+      if (!selectedChapter?.id || !user?.id) return;
 
       console.log(`💬 Fetching chats for Chapter: ${selectedChapter.id}`);
 
-      const { data, error } = await supabase
-        .from("chat_logs")
-        .select("*")
-        .eq("chapter_id", selectedChapter.id)
-        .order("created_at", { ascending: true });
-
-      if (error) {
-        console.error("❌ Chat Fetch Error:", error);
-      } else if (data) {
+      try {
+        const res = await fetch(`${API_URL}/chat-logs/${selectedChapter.id}/${user.id}`);
+        if (!res.ok) throw new Error("Chat fetch failed");
+        const data = await res.json();
+        
         console.log(`✅ Loaded ${data.length} messages`);
         setMessages(
-          data.map((m) => ({
+          data.map((m: any) => ({
             id: m.id,
             role: m.role as any,
             content: m.content,
-            imageUrl: m.imageUrl, // Ensure your DB has this column if you use images in chat
+            imageUrl: m.imageUrl,
           })),
         );
+      } catch (error) {
+        console.error("❌ Chat Fetch Error:", error);
       }
     };
 
     loadChatHistory();
-  }, [selectedChapter?.id]); // <--- Key Change: Depend on the ID string, not the object // <--- Dependency is correct
+  }, [selectedChapter?.id, user?.id]); // <--- Key Change: Depend on the ID string, not the object // <--- Dependency is correct
 
   // Reset audio if language changes
   useEffect(() => {
@@ -450,35 +440,31 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   }, [chapters, searchParams, selectedChapter]);
 
   const fetchStatsForUser = async (userId: string) => {
-    // 1. Get XP
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("xp")
-      .eq("id", userId)
-      .single();
-
-    if (profile) {
-      console.log("✅ XP Loaded:", profile.xp);
-      setUserXp(profile.xp || 0);
-    } else {
-      console.log("⚠️ No Profile found for XP");
+    // 1. Get XP from Backend Stats
+    try {
+      const statsRes = await fetch(`${API_URL}/stats/${userId}`);
+      if (statsRes.ok) {
+        const stats = await statsRes.json();
+        console.log("✅ XP Loaded:", stats.xp);
+        setUserXp(stats.xp || 0);
+      } else {
+        console.log("⚠️ No Profile found for XP");
+      }
+    } catch (e) {
+      console.error(e);
     }
 
-    // 2. Get Progress
-    const { count: total } = await supabase
-      .from("paragraphs")
-      .select("*", { count: "exact", head: true })
-      .eq("book_id", bookId);
-
-    const { count: completed } = await supabase
-      .from("user_progress")
-      .select("*", { count: "exact", head: true })
-      .eq("book_id", bookId)
-      .eq("user_id", userId)
-      .eq("is_completed", true);
-
-    if (total && total > 0) {
-      setBookProgress(Math.round(((completed || 0) / total) * 100));
+    // 2. Get Progress from Backend API
+    try {
+      const res = await fetch(`${API_URL}/book-progress/${bookId}/${userId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.total && data.total > 0) {
+          setBookProgress(Math.round(((data.completed || 0) / data.total) * 100));
+        }
+      }
+    } catch (e) {
+      console.error(e);
     }
   };
 

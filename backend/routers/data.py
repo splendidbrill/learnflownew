@@ -379,6 +379,33 @@ async def upsert_user_progress(body: UserProgressUpsert):
         raise HTTPException(status_code=500, detail="Failed to upsert user progress")
     return dict(row)
 
+@router.get("/user-progress/completed/{book_id}/{user_id}")
+async def get_completed_blocks(book_id: str, user_id: str):
+    """Get a list of completed block IDs for a user in a book."""
+    pool = await get_pool()
+    rows = await db_fetch(
+        pool, 
+        "SELECT current_block_id FROM user_progress WHERE user_id = $1 AND book_id = $2 AND is_completed = TRUE", 
+        user_id, book_id
+    )
+    return [str(r["current_block_id"]) for r in rows]
+
+@router.get("/book-progress/{book_id}/{user_id}")
+async def get_book_progress(book_id: str, user_id: str):
+    """Get total paragraphs and completed paragraphs for a book and user."""
+    pool = await get_pool()
+    total = await db_fetchval(
+        pool, 
+        "SELECT COUNT(*) FROM paragraphs p JOIN chapters c ON p.chapter_id = c.id WHERE c.book_id = $1", 
+        book_id
+    )
+    completed = await db_fetchval(
+        pool, 
+        "SELECT COUNT(*) FROM user_progress WHERE book_id = $1 AND user_id = $2 AND is_completed = TRUE", 
+        book_id, user_id
+    )
+    return {"total": total or 0, "completed": completed or 0}
+
 
 # ---------------------------------------------------------------------------
 # PARAGRAPHS
