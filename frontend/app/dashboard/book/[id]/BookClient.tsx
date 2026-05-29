@@ -1687,7 +1687,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
   const handlePlayAudio = async (text: string) => {
     setIsPlaying(true);
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/speak`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/speak`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

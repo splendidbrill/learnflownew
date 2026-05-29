@@ -78,7 +78,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
     setIsLoadingEmail(true);
     try {
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/user/email/${userId}`
+        `${process.env.NEXT_PUBLIC_API_URL}/user/email/${userId}`
       );
       const data = await res.json();
       if (data.email) {
@@ -99,7 +99,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
     setIsVerifying(true);
     try {
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/user/telegram-status/${userId}`
+        `${process.env.NEXT_PUBLIC_API_URL}/user/telegram-status/${userId}`
       );
       const data = await res.json();
       if (data.connected) {
@@ -289,7 +289,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                     </p>
                     <div className="bg-white p-2 rounded-lg inline-block">
                       <img
-                        src={`${process.env.NEXT_PUBLIC_API_URL}/api/user/telegram-qr/${userId}`}
+                        src={`${process.env.NEXT_PUBLIC_API_URL}/user/telegram-qr/${userId}`}
                         alt="Telegram QR Code"
                         className="w-[120px] h-[120px]"
                       />
