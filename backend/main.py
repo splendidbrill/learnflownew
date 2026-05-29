@@ -1193,6 +1193,13 @@ async def process_chapter_content(chapter_id: str):
 
     pool = await get_pool()
 
+    # Mark as processing immediately so the frontend stops reading a stale
+    # "completed" status and shows live progress from 0%.
+    try:
+        await db_execute(pool, "UPDATE chapters SET status = $1 WHERE id = $2", "processing_0", chapter_id)
+    except Exception:
+        pass
+
     try:
         # Get chapter info
         chapter = await db_fetchrow(pool, "SELECT * FROM chapters WHERE id = $1", chapter_id)
@@ -1250,10 +1257,18 @@ async def process_chapter_content(chapter_id: str):
             with open(pdf_path, "rb") as f:
                 pdf_bytes = f.read()
         else:
-            print(f"   ⬇️ Downloading PDF...")
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                resp = await client.get(book['file_url'])
-                resp.raise_for_status()
+            file_url = book['file_url']
+            print(f"   ⬇️ Downloading PDF from: {file_url}")
+            if file_url and "supabase" in file_url:
+                print(f"   ⚠️ WARNING: file_url still points at Supabase storage. "
+                      f"This book was not migrated to S3/CloudFront and the download will likely 404.")
+            async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+                resp = await client.get(file_url)
+                if resp.status_code != 200:
+                    raise Exception(
+                        f"PDF download failed ({resp.status_code}) for book {book_id} at {file_url}. "
+                        f"If this is an old Supabase URL, re-upload the book or migrate the file to S3."
+                    )
                 pdf_bytes = resp.content
             with open(pdf_path, "wb") as f:
                 f.write(pdf_bytes)

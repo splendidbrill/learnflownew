@@ -639,6 +639,17 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
 
         console.log("📊 Frontend Polling Status:", chapData?.status);
 
+        // Stop spinning forever if the backend job errored out
+        if (chapData?.status === "failed") {
+          setIsGenerating(false);
+          setChapterGenProgress(0);
+          clearInterval(interval);
+          alert(
+            "Chapter generation failed on the server. This usually means the book's PDF could not be downloaded (e.g. an old Supabase file_url). Check the backend logs.",
+          );
+          return;
+        }
+
         if (chapData?.status && chapData.status.startsWith("processing_")) {
           const percent = parseInt(chapData.status.split("_")[1]);
           if (!isNaN(percent)) setChapterGenProgress(percent);
