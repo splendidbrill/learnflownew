@@ -1506,6 +1506,11 @@ async def process_chapter_content(chapter_id: str):
         current_section = chapter_title
 
         for page_num in range(start_idx, end_idx + 1):
+            # Yield to the event loop on every page so this CPU-heavy background
+            # task doesn't starve the API (single uvicorn worker) and time out
+            # every request while a chapter is generating.
+            await asyncio.sleep(0)
+
             if page_num < 0 or page_num >= total_pdf_pages:
                 print(f"   ⚠️ Skipping out-of-bounds page {page_num}")
                 continue
@@ -1516,7 +1521,9 @@ async def process_chapter_content(chapter_id: str):
             this_page_images = []
             ignore_rects = []
 
-            tables_html = extract_tables_from_page(pdf_bytes, page_num)
+            # Offload table extraction (opens its own pdfplumber doc) to a thread
+            # so it doesn't block the event loop.
+            tables_html = await asyncio.to_thread(extract_tables_from_page, pdf_bytes, page_num)
             page_tables.append(tables_html)
 
             if tables_html:
@@ -1596,7 +1603,7 @@ async def process_chapter_content(chapter_id: str):
                             idx = len(page_images) * 100 + len(this_page_images)
                             filename = f"{book_id}/{chapter_id}_{idx}.png"
                             upload_queue.append((filename, img_bytes))
-                            url = supabase.storage.from_("book-assets").get_public_url(filename)
+                            url = get_cloudfront_url(filename)
                             this_page_images.append({
                                 "chapter_id": chapter_id,
                                 "content": url,
