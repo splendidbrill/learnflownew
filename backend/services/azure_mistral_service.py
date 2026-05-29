@@ -20,7 +20,14 @@ MISTRAL_MODEL = "mistral-document-ai-2512"
 
 print(f"🔍 OCR Service: Azure Mistral Document AI 2512 ({MISTRAL_MODEL})")
 
+# Limit concurrency to prevent 429 RateLimitReached errors when processing many pages
+mistral_semaphore = asyncio.Semaphore(3)
+
 async def extract_text_with_mistral(image_bytes: bytes, domain: str = "general") -> str:
+    async with mistral_semaphore:
+        return await _extract_text_with_mistral_impl(image_bytes, domain)
+
+async def _extract_text_with_mistral_impl(image_bytes: bytes, domain: str = "general") -> str:
     """
     Extract text using Mistral Document AI (OCR).
     Format: Markdown.
@@ -62,22 +69,25 @@ async def extract_text_with_mistral(image_bytes: bytes, domain: str = "general")
         "Content-Type": "application/json"
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         try:
-            resp = await client.post(MISTRAL_ENDPOINT, json=payload, headers=headers)
-            
-            if resp.status_code != 200:
-                # Try with api-key header if 401
+            # Retry with backoff for rate limits
+            for attempt in range(8):
+                resp = await client.post(MISTRAL_ENDPOINT, json=payload, headers=headers)
+                if resp.status_code == 429:
+                    import random
+                    wait = (2 ** attempt) + random.uniform(1, 5)
+                    print(f"⏳ Rate limited (attempt {attempt+1}), waiting {wait:.2f}s...")
+                    await asyncio.sleep(wait)
+                    continue
                 if resp.status_code == 401:
-                    headers = {
-                        "api-key": MISTRAL_KEY,
-                        "Content-Type": "application/json"
-                    }
-                    resp = await client.post(MISTRAL_ENDPOINT, json=payload, headers=headers)
-                
-                if resp.status_code != 200:
-                    print(f"❌ Mistral OCR Failed: {resp.status_code} - {resp.text}")
-                    return ""
+                    headers = {"api-key": MISTRAL_KEY, "Content-Type": "application/json"}
+                    continue
+                break
+
+            if resp.status_code != 200:
+                print(f"❌ Mistral OCR Failed: {resp.status_code} - {resp.text}")
+                return ""
             
             data = resp.json()
             
