@@ -18,6 +18,7 @@
     "canvas-confetti": "^1.9.4",
     "clsx": "^2.1.1",
     "framer-motion": "^11.2.10",
+    "geist": "^1.7.2",
     "katex": "^0.16.27",
     "lucide-react": "^0.395.0",
     "mermaid": "^11.12.2",
