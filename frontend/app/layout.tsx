@@ -1,38 +1,12 @@
-// import type { Metadata } from "next";
-// import { Inter } from "next/font/google";
-// import "./globals.css";
-
-// const inter = Inter({ subsets: ["latin"] });
-
-// export const metadata: Metadata = {
-//   title: "LearningFlux - AI Tutor",
-//   description: "Learn complex topics with AI analogies",
-// };
-
-// export default function RootLayout({
-//   children,
-// }: Readonly<{
-//   children: React.ReactNode;
-// }>) {
-//   return (
-//     <html lang="en">
-//       <body className={`${inter.className} bg-slate-950 text-white`}>
-//         {children}
-//       </body>
-//     </html>
-//   );
-// }
-
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
 import "./globals.css";
-
-// Use Inter (a standard, safe Google Font) instead of local files
-const inter = Inter({ subsets: ["latin"] });
+import "../app/learningflux/learningflux.css";
 
 export const metadata: Metadata = {
-  title: "LearningFlux",
-  description: "AI Tutor Platform",
+  title: "LearningFlux — White-labeled AI tutoring for IIT-JEE institutes",
+  description: "White-labeled AI tutoring infrastructure for serious IIT-JEE institutes. Your brand on the front. Our brain underneath.",
 };
 
 export default function RootLayout({
@@ -42,8 +16,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      {/* We apply the font and your dark background color here */}
-      <body className={`${inter.className} bg-slate-950 text-white antialiased`}>
+      <body className={`${GeistSans.variable} ${GeistMono.variable} antialiased`}>
         {children}
       </body>
     </html>
