@@ -181,14 +181,15 @@
 
 "use client";
 import React, { useState, useRef, useEffect } from 'react';
-import { 
-  LogOut, 
-  Home, 
-  User as UserIcon, 
-  ChevronRight, 
+import {
+  LogOut,
+  Home,
+  User as UserIcon,
+  ChevronRight,
   ChevronLeft,
   LayoutDashboard,
   Shield,
+  ScanLine,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client"; 
 import { useRouter, usePathname } from "next/navigation"; 
@@ -285,6 +286,19 @@ export const Sidebar: React.FC<SidebarProps> = ({ user }) => {
         >
           <UserIcon className="w-5 h-5 shrink-0" />
           {!isCollapsed && <span className="font-medium truncate animate-in fade-in">My Profile</span>}
+        </Link>
+
+        {/* OCR Studio */}
+        <Link
+          href="/dashboard/ocr"
+          className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all group ${
+            pathname.startsWith('/dashboard/ocr')
+              ? 'bg-violet-600/10 text-violet-300 border border-violet-600/20'
+              : 'text-gray-400 hover:bg-white/5 hover:text-white border border-transparent'
+          }`}
+        >
+          <ScanLine className="w-5 h-5 shrink-0" />
+          {!isCollapsed && <span className="font-medium truncate animate-in fade-in">OCR Studio</span>}
         </Link>
 
         {/* Admin Panel - Only for Founder */}

@@ -28,7 +28,7 @@ from db_helpers import db_fetch, db_fetchrow, db_execute, db_fetchval
 from services.vision_service import analyze_diagram, describe_image, is_valid_diagram
 from services.mermaid_service import generate_concept_diagram, personalize_image_explanation
 from services.s3_service import upload_file_to_s3, get_cloudfront_url
-from routers import scheduler, stats, admin, subscription, rate_limits, payment, contact, data
+from routers import scheduler, stats, admin, subscription, rate_limits, payment, contact, data, ocr
 
 # 1. Load Env
 env_path = Path(__file__).parent / '.env'
@@ -53,6 +53,7 @@ app.include_router(rate_limits.router, prefix="/api")
 app.include_router(payment.router, prefix="/api")
 app.include_router(contact.router, prefix="/api")
 app.include_router(data.router, prefix="/api")
+app.include_router(ocr.router, prefix="/api")
 
 # --- 3. SETUP TEXT BRAIN (DeepSeek via Azure) ---
 text_base_url = os.getenv("AZURE_TEXT_BASE_URL")
@@ -82,6 +83,40 @@ async def set_telegram_webhook():
         try:
             await client.post(f"https://api.telegram.org/bot{bot_token}/setWebhook", params={"url": webhook_url})
         except: pass
+
+# --- STARTUP HOOK (OCR TABLES) ---
+@app.on_event("startup")
+async def create_ocr_tables():
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS ocr_books (
+                    id            SERIAL PRIMARY KEY,
+                    user_id       UUID         NOT NULL,
+                    title         VARCHAR(500) NOT NULL,
+                    filename      VARCHAR(500),
+                    total_pages   INTEGER      DEFAULT 0,
+                    status        VARCHAR(50)  DEFAULT 'processing',
+                    error_message TEXT,
+                    created_at    TIMESTAMPTZ  DEFAULT NOW(),
+                    updated_at    TIMESTAMPTZ  DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS ocr_chapters (
+                    id              SERIAL PRIMARY KEY,
+                    book_id         INTEGER      NOT NULL REFERENCES ocr_books(id) ON DELETE CASCADE,
+                    chapter_number  INTEGER      NOT NULL,
+                    chapter_title   VARCHAR(500),
+                    content         TEXT,
+                    page_start      INTEGER,
+                    page_end        INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS idx_ocr_books_user_id    ON ocr_books(user_id);
+                CREATE INDEX IF NOT EXISTS idx_ocr_chapters_book_id ON ocr_chapters(book_id);
+            """)
+        print("✅ OCR tables ready")
+    except Exception as e:
+        print(f"⚠️  OCR table creation skipped: {e}")
 
 # --- MODELS ---
 # Example - your file should have something like this:

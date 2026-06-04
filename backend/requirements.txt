@@ -30,6 +30,7 @@ razorpay
 pdfplumber
 pymupdf
 pypdf
+inference-sdk
 beautifulsoup4
 markdown
 uuid7
