@@ -58,23 +58,42 @@ async def ocr_image_roboflow(image_bytes: bytes) -> str:
 # Chapter detection
 # ---------------------------------------------------------------------------
 
+# Matches explicit chapter/part labels only — short lines, not sentences
 _CHAPTER_RE = re.compile(
-    r"^(chapter\s+[\divxlcdmIVXLCDM]+|part\s+[\divxlcdmIVXLCDM]+|\d+\.\s+\S)",
+    r"^(chapter\s+[\divxlcdmIVXLCDM]+|part\s+[\divxlcdmIVXLCDM]+)[\s:\-–—]*",
     re.IGNORECASE,
 )
+
+# Matches ALL-CAPS short lines (likely section/chapter titles in textbooks)
+_ALLCAPS_RE = re.compile(r"^[A-Z][A-Z\s\d\-–:]{3,50}$")
+
+
+def _is_chapter_heading(line: str) -> bool:
+    """Return True only for lines that look like chapter/section headings."""
+    line = line.strip()
+    # Must be short enough to be a title (not a question or sentence)
+    if len(line) > 80:
+        return False
+    # Explicit "Chapter N" or "Part N"
+    if _CHAPTER_RE.match(line):
+        return True
+    # All-caps short line (e.g. "INTRODUCTION TO PHYSICS")
+    if _ALLCAPS_RE.match(line):
+        return True
+    return False
 
 
 def detect_chapters(pages_text: list[str]) -> list[dict]:
     """
     Group OCR'd page texts into chapters by looking for chapter headings
-    in the first few lines of each page.
+    in the first three lines of each page.
 
     Returns a list of dicts: {number, title, content, page_start, page_end}
     """
     chapters: list[dict] = []
     current: dict = {
         "number": 0,
-        "title": "Preface / Introduction",
+        "title": "Introduction",
         "page_start": 1,
         "parts": [],
     }
@@ -84,8 +103,9 @@ def detect_chapters(pages_text: list[str]) -> list[dict]:
         lines = [l.strip() for l in page_text.splitlines() if l.strip()]
 
         heading_found = False
-        for line in lines[:6]:
-            if _CHAPTER_RE.match(line):
+        # Only check the first 3 lines — headings are at the top of the page
+        for line in lines[:3]:
+            if _is_chapter_heading(line):
                 if current["parts"] or chapters:
                     current["page_end"] = page_num - 1
                     current["content"] = "\n\n".join(current["parts"])
@@ -108,7 +128,7 @@ def detect_chapters(pages_text: list[str]) -> list[dict]:
     current["content"] = "\n\n".join(current["parts"])
     chapters.append(_strip_parts(current))
 
-    # If no chapters were detected, treat the whole book as one section
+    # If nothing detected, treat whole book as one section
     if not chapters or (len(chapters) == 1 and chapters[0]["number"] == 0):
         return [{
             "number": 1,

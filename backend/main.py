@@ -935,8 +935,8 @@ def merge_rects(rects, threshold=25):
                 if used[j]:
                     continue
                 other = fitz.Rect(rects[j])
-                expanded = current + threshold
-                if expanded.intersects(other) or current.intersects(other):
+                expanded = fitz.Rect(current.x0 - threshold, current.y0 - threshold, current.x1 + threshold, current.y1 + threshold)
+                if expanded.intersects(other):
                     current = current | other
                     used[j] = True
                     changed = True
@@ -1601,10 +1601,10 @@ async def process_chapter_content(chapter_id: str):
                                     "is_completed": False
                                 })
                                 ignore_rects.append(d_rect)
-                        except:
-                            pass
-                except:
-                    pass
+                        except Exception as e:  # TEMP DIAG — revert when done
+                            print(f"⚠️ diagram drop: {e}")
+                except Exception as e:  # TEMP DIAG — revert when done
+                    print(f"⚠️ diagram drop: {e}")
 
             if extract_images:
                 for block in blocks:
@@ -1862,8 +1862,10 @@ async def extract_chapter_content(doc, start_idx: int, end_idx: int,
                             "chapter_id": chapter_id, "content": url, "type": "image",
                             "section_title": current_section, "is_completed": False
                         })
-                except: pass
-        except: pass
+                except Exception as e:  # TEMP DIAG — revert when done
+                    print(f"⚠️ diagram drop: {e}")
+        except Exception as e:  # TEMP DIAG — revert when done
+            print(f"⚠️ diagram drop: {e}")
 
         # Queue OCR
         pix = page.get_pixmap()
