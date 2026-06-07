@@ -1082,6 +1082,33 @@ async def upload_image_to_supabase(supabase, path: str, img_bytes: bytes, max_re
     return (False, None, "Max retries exceeded")
 
 
+def is_toc_page(page):
+    """Detect a table-of-contents / index page.
+
+    ToC pages densely list section numbers (1.1, 2.13, ...) and/or mention
+    several 'Chapter N' headings. A real chapter-start page references at most
+    a couple of its own sections, so a high count is a reliable ToC signal.
+    """
+    try:
+        text = page.get_text("text")
+    except Exception:
+        return False
+    if not text.strip():
+        return False
+    # Several DISTINCT "Chapter N" headings on one page → contents/index page.
+    # (A real page references its own chapter, rarely 3+ different ones.)
+    chapter_nums = re.findall(r'\bchapter\s+(\d+)\b', text, re.IGNORECASE)
+    if len(set(chapter_nums)) >= 3:
+        return True
+    # ToC entry lines: a section number at line start followed by a worded title
+    # (e.g. "2.3 Addition of Vectors"). Decimal values like "9.8 m/s" sit
+    # mid-line, so they don't match and real content pages stay safe.
+    entry_lines = re.findall(r'(?m)^\s*\d{1,2}\.\d{1,2}\s+[A-Za-z]', text)
+    if len(entry_lines) >= 8:
+        return True
+    return False
+
+
 def get_solid_diagram_regions(page):
     """Finds regions on the page that contain dense vector drawings."""
     paths = page.get_drawings()
@@ -1414,6 +1441,12 @@ async def process_chapter_content(chapter_id: str):
                         continue
 
                     page = doc[check_idx]
+
+                    # Never accept a table-of-contents page as the chapter start —
+                    # the ToC lists every "Chapter N" header and would otherwise match.
+                    if is_toc_page(page):
+                        continue
+
                     blocks = page.get_text("dict")["blocks"]
 
                     for b in blocks:
@@ -1567,6 +1600,13 @@ async def process_chapter_content(chapter_id: str):
                 continue
 
             page = doc[page_num]
+
+            # Skip any table-of-contents page that slipped into the range so the
+            # chapter body never opens with the book's full contents listing.
+            if is_toc_page(page):
+                print(f"   ⏭️ Skipping TOC page {page_num + 1}")
+                continue
+
             page_rect = page.rect
             blocks = page.get_text("dict")["blocks"]
             this_page_images = []
@@ -1643,6 +1683,13 @@ async def process_chapter_content(chapter_id: str):
 
                     skip = any(bbox & ir for ir in ignore_rects) if ignore_rects else False
                     if skip:
+                        continue
+
+                    # Skip embedded images whose bounding box is covered by OCR text
+                    # (equation blocks in scanned PDFs have many text words in the same region)
+                    text_words = page.get_text("words", clip=bbox)
+                    if len(text_words) > 8:
+                        print(f"⚙️ skipping text-heavy image block {bbox} ({len(text_words)} words)")
                         continue
 
                     try:

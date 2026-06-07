@@ -1,3 +1,9 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Never show KaTeX parse errors as red literal LaTeX — make them blend in */
+.katex-error {
+  color: inherit !important;
+  opacity: 0.85;
+}
