@@ -1259,7 +1259,7 @@ async def process_chapter_content(chapter_id: str):
         # ============================================================
         is_ncert = book_description.upper().startswith('NCERT') or 'ncert' in book_title.lower()
         size_floor = 100 if is_ncert else 60
-        render_zoom = 2.0 if is_ncert else 3.5
+        render_zoom = 2.0 if is_ncert else 2.5
 
         description_core = book_description.replace('NCERT ', '').replace('NCERT', '').strip()
         book_type = "general"
@@ -1592,8 +1592,10 @@ async def process_chapter_content(chapter_id: str):
                             continue
 
                         try:
+                            pad = 12
+                            clip = fitz.Rect(max(0, d_rect.x0 - pad), max(0, d_rect.y0 - pad), min(page_rect.width, d_rect.x1 + pad), min(page_rect.height, d_rect.y1 + pad))
                             mat = fitz.Matrix(render_zoom, render_zoom)
-                            pix = page.get_pixmap(matrix=mat, clip=d_rect)
+                            pix = page.get_pixmap(matrix=mat, clip=clip)
                             if pix.alpha:
                                 pix = fitz.Pixmap(pix, 0)
                             img_bytes = pix.tobytes("png")

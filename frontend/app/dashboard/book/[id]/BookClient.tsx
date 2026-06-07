@@ -25,6 +25,7 @@ import { createClient } from "@/lib/supabase/client";
 import { ScheduleModal } from "../../components/ScheduleModal"; // Ensure this path is correct
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
+import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -1561,8 +1562,8 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                                 </pre>
                               )}
                               <ReactMarkdown
-                                remarkPlugins={[remarkMath]}
-                                rehypePlugins={[rehypeKatex, rehypeRaw]}
+                                remarkPlugins={[remarkMath, remarkGfm]}
+                                rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }], rehypeRaw]}
                               >
                                 {para.latex_content}
                               </ReactMarkdown>
@@ -1633,8 +1634,8 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                         />
                       ) : (
                         <ReactMarkdown
-                          remarkPlugins={[remarkMath]}
-                          rehypePlugins={[rehypeKatex]}
+                          remarkPlugins={[remarkMath, remarkGfm]}
+                          rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
                           components={{
                             p: ({ node, children }) => (
                               <p className="mb-4 text-gray-300 leading-relaxed">{children}</p>
