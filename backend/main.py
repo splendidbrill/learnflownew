@@ -1478,6 +1478,26 @@ async def process_chapter_content(chapter_id: str):
                     if is_toc_page(page):
                         continue
 
+                    # Font-agnostic header match: scanned/OCR PDFs frequently have a
+                    # uniform text-layer font, so the size-based checks below miss the
+                    # heading entirely and the search falls back to the raw TOC page
+                    # (which is off by the front-matter offset). The OCR text still
+                    # reads "CHAPTER N ..." at the top of the real chapter page, and
+                    # ToC pages are already excluded, so matching that text is safe.
+                    if chapter_number:
+                        page_head = page.get_text("text").strip()[:80]
+                        if re.search(rf'\bchapter\s+{chapter_number}\b', page_head, re.IGNORECASE):
+                            new_start = check_idx + 1
+                            if new_start != start_page:
+                                print(f"   ✅ Corrected (text header): page {start_page} → {new_start}")
+                                start_page = new_start
+                                start_idx = check_idx
+                                await db_execute(pool, "UPDATE chapters SET start_page_num = $1 WHERE id = $2", new_start, chapter_id)
+                            else:
+                                print(f"   ✅ Start confirmed (text header): page {start_page}")
+                            found_start = True
+                            break
+
                     blocks = page.get_text("dict")["blocks"]
 
                     for b in blocks:
@@ -1545,6 +1565,18 @@ async def process_chapter_content(chapter_id: str):
                         # next chapter start (would cut this chapter off far too early).
                         if is_toc_page(page):
                             continue
+
+                        # Font-agnostic header match (see start-search note): find the
+                        # NEXT chapter's "CHAPTER N" heading even when the scanned text
+                        # layer carries no usable font sizes.
+                        if next_ch_num:
+                            page_head = page.get_text("text").strip()[:80]
+                            if re.search(rf'\bchapter\s+{next_ch_num}\b', page_head, re.IGNORECASE):
+                                end_idx = check_idx - 1
+                                print(f"   ✅ Next chapter found (text header) at page {check_idx + 1}")
+                                print(f"   ✅ This chapter ends at page {end_idx + 1}")
+                                found_next = True
+                                break
 
                         blocks = page.get_text("dict")["blocks"]
 
