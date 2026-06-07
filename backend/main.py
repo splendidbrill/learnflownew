@@ -1367,11 +1367,25 @@ async def process_chapter_content(chapter_id: str):
         has_valid_toc = True
 
         if all_chapters:
-            for ch in all_chapters:
-                if ch['start_page_num'] > total_pdf_pages:
-                    print(f"   ⚠️ Chapter '{ch['title']}' has invalid start page {ch['start_page_num']} > {total_pdf_pages}")
-                    has_valid_toc = False
-                    break
+            # Diagnostic: show every chapter's stored start page vs the PDF size.
+            pages_dbg = [(ch['order_index'], ch['start_page_num']) for ch in all_chapters]
+            print(f"   📑 TOC page map (order:start_page) vs {total_pdf_pages} PDF pages: {pages_dbg}")
+
+            invalid = [
+                ch for ch in all_chapters
+                if not ch['start_page_num'] or ch['start_page_num'] < 1 or ch['start_page_num'] > total_pdf_pages
+            ]
+            for ch in invalid:
+                print(f"   ⚠️ Chapter '{ch['title']}' has invalid start page {ch['start_page_num']} (PDF has {total_pdf_pages})")
+
+            # A single bad page number must NOT collapse a multi-chapter book into
+            # single-chapter mode (which makes every chapter render from Chapter 1).
+            # Only distrust the TOC when most chapters are out of range.
+            if len(invalid) > max(1, len(all_chapters) // 2):
+                print(f"   ⚠️ {len(invalid)}/{len(all_chapters)} chapters have invalid pages — treating TOC as unreliable")
+                has_valid_toc = False
+            elif invalid:
+                print(f"   ℹ️ {len(invalid)} chapter(s) out of range but TOC kept (will clamp per-chapter)")
 
         chapter_headers_found = []
         if not has_valid_toc or total_chapters <= 1:
