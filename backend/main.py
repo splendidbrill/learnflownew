@@ -985,8 +985,8 @@ def extract_tables_from_page(pdf_bytes: bytes, page_num: int) -> List[str]:
                     continue
 
                 # Convert to HTML table
-                html_out = '<div class="table-container" style="overflow-x: auto; margin: 20px 0;">\n'
-                html_out += '<table style="border-collapse: collapse; width: 100%; font-size: 14px; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">\n'
+                html_out = '<div class="table-container" style="overflow-x: auto; margin: 20px 0; border-radius: 10px; border: 1px solid rgba(139,92,246,0.2);">\n'
+                html_out += '<table style="border-collapse: collapse; width: 100%; font-size: 14px; background: transparent;">\n'
 
                 for row_idx, row in enumerate(cleaned_table):
                     # Skip completely empty rows
@@ -995,16 +995,16 @@ def extract_tables_from_page(pdf_bytes: bytes, page_num: int) -> List[str]:
 
                     if row_idx == 0:
                         # Header row
-                        html_out += '<thead>\n<tr style="background-color: #1F4E79; color: white;">\n'
+                        html_out += '<thead>\n<tr style="background: linear-gradient(135deg, #2d1b69, #1a0540); color: white;">\n'
                         for cell in row:
-                            html_out += f'<th style="border: 1px solid #ddd; padding: 10px; text-align: center; font-weight: 600;">{cell}</th>\n'
+                            html_out += f'<th style="border: 1px solid rgba(139,92,246,0.25); padding: 11px 14px; text-align: center; font-weight: 600; font-size: 13px; letter-spacing: 0.02em;">{cell}</th>\n'
                         html_out += '</tr>\n</thead>\n<tbody>\n'
                     else:
                         # Data row with alternating colors
-                        bg_color = '#f9f9f9' if row_idx % 2 == 0 else '#ffffff'
+                        bg_color = 'rgba(45,27,105,0.25)' if row_idx % 2 == 0 else 'rgba(26,5,64,0.4)'
                         html_out += f'<tr style="background-color: {bg_color};">\n'
                         for cell in row:
-                            html_out += f'<td style="border: 1px solid #ddd; padding: 8px; text-align: center;">{cell}</td>\n'
+                            html_out += f'<td style="border: 1px solid rgba(139,92,246,0.15); padding: 9px 14px; text-align: center; color: #d1d5db;">{cell}</td>\n'
                         html_out += '</tr>\n'
 
                 html_out += '</tbody>\n</table>\n</div>'

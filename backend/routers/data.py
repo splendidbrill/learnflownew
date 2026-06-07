@@ -262,8 +262,11 @@ async def update_book(book_id: str, body: BookUpdate):
 
 @router.delete("/books/{book_id}")
 async def delete_book(book_id: str):
-    """Delete a book."""
+    """Delete a book and all dependent data."""
     pool = await get_pool()
+    await db_execute(pool, "DELETE FROM chat_logs WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = $1)", book_id)
+    await db_execute(pool, "DELETE FROM paragraphs WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = $1)", book_id)
+    await db_execute(pool, "DELETE FROM chapters WHERE book_id = $1", book_id)
     await db_execute(pool, "DELETE FROM course_books WHERE id = $1", book_id)
     return {"success": True}
 
