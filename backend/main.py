@@ -1509,6 +1509,12 @@ async def process_chapter_content(chapter_id: str):
                             continue
 
                         page = doc[check_idx]
+
+                        # The ToC lists every chapter heading; never match it as the
+                        # next chapter start (would cut this chapter off far too early).
+                        if is_toc_page(page):
+                            continue
+
                         blocks = page.get_text("dict")["blocks"]
 
                         for b in blocks:
@@ -1519,14 +1525,19 @@ async def process_chapter_content(chapter_id: str):
                                 line_text = " ".join([s["text"] for s in line["spans"]])
                                 max_size = max([s["size"] for s in line["spans"]])
 
-                                if max_size > 30 and next_ch_num:
-                                    nums = re.findall(r'\d+', line_text)
-                                    if nums and len(nums) == 1 and int(nums[0]) == next_ch_num:
-                                        end_idx = check_idx - 1
-                                        print(f"   ✅ Next chapter found at page {check_idx + 1}")
-                                        print(f"   ✅ This chapter ends at page {end_idx + 1}")
-                                        found_next = True
-                                        break
+                                # Mirror the start-detection logic exactly: a header is
+                                # either a large standalone number OR "Chapter N" text.
+                                # (The old code only matched a >30pt lone number, so it
+                                # missed worded "Chapter N" headers and never found the
+                                # boundary — chapters then bled into the next one.)
+                                is_standalone = max_size > 30 and bool(re.fullmatch(r'\s*\d+\s*', line_text)) and re.findall(r'\d+', line_text) and int(re.findall(r'\d+', line_text)[0]) == next_ch_num
+                                is_chapter_header = max_size > 15 and next_ch_num and bool(re.search(rf'\bchapter\s*{next_ch_num}\b', line_text, re.IGNORECASE))
+                                if next_ch_num and (is_standalone or is_chapter_header):
+                                    end_idx = check_idx - 1
+                                    print(f"   ✅ Next chapter found at page {check_idx + 1}")
+                                    print(f"   ✅ This chapter ends at page {end_idx + 1}")
+                                    found_next = True
+                                    break
                             if found_next:
                                 break
                         if found_next:
