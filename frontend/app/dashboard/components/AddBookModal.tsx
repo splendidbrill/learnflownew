@@ -28,6 +28,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
   const [author, setAuthor] = useState('');
   // const [description, setDescription] = useState(''); // REMOVED
   const [domain, setDomain] = useState('');
+  const [isNcert, setIsNcert] = useState(false);
   const [analogyTopic, setAnalogyTopic] = useState('');
   const [file, setFile] = useState<File | null>(null);
   
@@ -45,6 +46,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
       setTitle('');
       setAuthor('');
       setDomain('');
+      setIsNcert(false);
       setAnalogyTopic('');
       setFile(null);
       setProgress(0);
@@ -115,7 +117,7 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
       const bookData = {
         title,
         author,
-        description: domain, // Use domain as description for cards
+        description: isNcert ? `NCERT ${domain}` : domain,
         subject_id: subjectId,
         user_id: user.id,
         file_url: fileUrl,
@@ -261,6 +263,18 @@ export const AddBookModal: React.FC<AddBookModalProps> = ({
                 ))}
               </div>
               {!domain && <p className="text-xs text-red-400/80 mt-1">Please select a domain to enable smart features.</p>}
+            </div>
+
+            {/* NCERT TOGGLE */}
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setIsNcert(v => !v)}
+                className={`relative w-10 h-5 rounded-full transition-colors ${isNcert ? 'bg-purple-600' : 'bg-white/10'}`}
+              >
+                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${isNcert ? 'translate-x-5' : 'translate-x-0'}`} />
+              </button>
+              <span className="text-sm text-gray-300">NCERT book <span className="text-gray-500 text-xs">(uses higher-quality diagram settings)</span></span>
             </div>
 
             <div className="space-y-2">

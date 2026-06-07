@@ -1257,17 +1257,22 @@ async def process_chapter_content(chapter_id: str):
         # ============================================================
         # DETECT BOOK TYPE (Hybrid: User selection + Title fallback)
         # ============================================================
+        is_ncert = book_description.upper().startswith('NCERT') or 'ncert' in book_title.lower()
+        size_floor = 100 if is_ncert else 60
+        render_zoom = 2.0 if is_ncert else 3.5
+
+        description_core = book_description.replace('NCERT ', '').replace('NCERT', '').strip()
         book_type = "general"
 
-        if book_description == 'Math':
+        if description_core == 'Math':
             book_type = "math"
-        elif book_description == 'Science':
+        elif description_core == 'Science':
             book_type = "science"
-        elif book_description == 'Computer Science':
+        elif description_core == 'Computer Science':
             book_type = "computer"
-        elif book_description in ['History', 'Geography', 'Political Science', 'Literature', 'Self Help']:
+        elif description_core in ['History', 'Geography', 'Political Science', 'Literature', 'Self Help']:
             book_type = "general"
-        elif book_description == 'Others' or not book_description:
+        elif description_core == 'Others' or not description_core:
             title_lower = book_title.lower()
             if any(kw in title_lower for kw in ['math', 'calculus', 'algebra', 'geometry', 'statistics', 'trigonometry']):
                 book_type = "math"
@@ -1574,7 +1579,7 @@ async def process_chapter_content(chapter_id: str):
                     diagram_rects = get_solid_diagram_regions(page)
 
                     for d_rect in diagram_rects:
-                        if d_rect.width < 100 or d_rect.height < 100:
+                        if d_rect.width < size_floor or d_rect.height < size_floor:
                             continue
 
                         aspect_ratio = d_rect.width / d_rect.height if d_rect.height > 0 else 0
@@ -1587,7 +1592,7 @@ async def process_chapter_content(chapter_id: str):
                             continue
 
                         try:
-                            mat = fitz.Matrix(2.0, 2.0)
+                            mat = fitz.Matrix(render_zoom, render_zoom)
                             pix = page.get_pixmap(matrix=mat, clip=d_rect)
                             if pix.alpha:
                                 pix = fitz.Pixmap(pix, 0)
@@ -1633,7 +1638,7 @@ async def process_chapter_content(chapter_id: str):
                         continue
 
                     try:
-                        mat = fitz.Matrix(2.0, 2.0)
+                        mat = fitz.Matrix(render_zoom, render_zoom)
                         pix = page.get_pixmap(matrix=mat, clip=bbox)
                         if pix.alpha:
                             pix = fitz.Pixmap(pix, 0)
