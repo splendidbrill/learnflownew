@@ -719,7 +719,11 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
             except: pass
 
             # Get valid chapters (exclude contents, preface, etc.)
-            exclude_keywords = ['content', 'preface', 'foreword', 'index', 'appendix', 'glossary', 'bibliography']
+            exclude_keywords = [
+                'content', 'preface', 'foreword', 'index', 'appendix', 'glossary', 'bibliography',
+                'cover', 'title page', 'copyright', 'acknowledgement', 'dedication',
+                'about the', 'to the student', 'front matter',
+            ]
             valid_chapters = [t for t in toc if t[0] == 1 and
                             not any(kw in t[1].lower() for kw in exclude_keywords)]
 
@@ -879,7 +883,8 @@ CRITICAL:
                 if detected_chapters and len(detected_chapters) > 0:
                     exclude_kw = ['foreword', 'preface', 'acknowledgement', 'introduction by',
                                    'note for', 'notes for', 'about the', 'dedication', 'contents',
-                                   'table of', 'index', 'appendix', 'glossary', 'bibliography']
+                                   'table of', 'index', 'appendix', 'glossary', 'bibliography',
+                                   'cover', 'title page', 'copyright', 'to the student', 'front matter']
 
                     for chap in detected_chapters:
                         title = chap.get("title", "").lower()
