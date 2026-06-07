@@ -1356,6 +1356,26 @@ async def process_chapter_content(chapter_id: str):
 
         print(f"   📄 PDF has {total_pdf_pages} pages")
 
+        # If this chapter begins beyond the uploaded PDF, the file simply does not
+        # contain it. This happens when a sample/excerpt PDF carries the full book's
+        # table of contents, so every chapter gets a page number but only the first
+        # few pages exist. Write a clear placeholder instead of dumping the whole
+        # book into the chapter (which made every chapter start with Chapter 1).
+        if start_page and start_page > total_pdf_pages:
+            print(f"   🚫 Chapter starts at page {start_page} but PDF has only {total_pdf_pages} pages — not in this file.")
+            await db_execute(pool, "DELETE FROM paragraphs WHERE chapter_id = $1", chapter_id)
+            await db_execute(
+                pool,
+                "INSERT INTO paragraphs (chapter_id, content, type, order_index, section_title, is_completed) VALUES ($1, $2, $3, $4, $5, $6)",
+                chapter_id,
+                (f"⚠️ This chapter isn't included in the uploaded PDF. The file has only "
+                 f"{total_pdf_pages} pages, but this chapter begins on page {start_page} of the "
+                 f"full book. Please upload the complete PDF to generate this chapter."),
+                "text", 0, chapter_title, False,
+            )
+            await db_execute(pool, "UPDATE chapters SET status = $1 WHERE id = $2", "completed", chapter_id)
+            return
+
         all_chapters = await db_fetch(pool, "SELECT id, title, start_page_num, order_index FROM chapters WHERE book_id = $1 ORDER BY order_index", book_id)
         total_chapters = len(all_chapters) if all_chapters else 1
 
@@ -1371,21 +1391,18 @@ async def process_chapter_content(chapter_id: str):
             pages_dbg = [(ch['order_index'], ch['start_page_num']) for ch in all_chapters]
             print(f"   📑 TOC page map (order:start_page) vs {total_pdf_pages} PDF pages: {pages_dbg}")
 
+            # Chapters that start beyond the PDF (a partial/sample file carrying the
+            # full book's TOC) are handled per-chapter by the out-of-range guard
+            # above — they must NOT collapse the WHOLE book into single-chapter mode,
+            # or every in-range chapter would wrongly render from Chapter 1. As long
+            # as there are multiple chapters, keep TOC (multi-chapter) mode.
             invalid = [
                 ch for ch in all_chapters
                 if not ch['start_page_num'] or ch['start_page_num'] < 1 or ch['start_page_num'] > total_pdf_pages
             ]
-            for ch in invalid:
-                print(f"   ⚠️ Chapter '{ch['title']}' has invalid start page {ch['start_page_num']} (PDF has {total_pdf_pages})")
-
-            # A single bad page number must NOT collapse a multi-chapter book into
-            # single-chapter mode (which makes every chapter render from Chapter 1).
-            # Only distrust the TOC when most chapters are out of range.
-            if len(invalid) > max(1, len(all_chapters) // 2):
-                print(f"   ⚠️ {len(invalid)}/{len(all_chapters)} chapters have invalid pages — treating TOC as unreliable")
-                has_valid_toc = False
-            elif invalid:
-                print(f"   ℹ️ {len(invalid)} chapter(s) out of range but TOC kept (will clamp per-chapter)")
+            if invalid:
+                print(f"   ℹ️ {len(invalid)}/{len(all_chapters)} chapter(s) start beyond the {total_pdf_pages}-page "
+                      f"PDF (likely a partial/sample file); in-range chapters still process normally.")
 
         chapter_headers_found = []
         if not has_valid_toc or total_chapters <= 1:
