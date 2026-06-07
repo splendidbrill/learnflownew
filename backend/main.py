@@ -769,8 +769,8 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
                                         text = span["text"].strip().lower()
                                         size = span["size"]
 
-                                        # Match chapter number pattern (most reliable)
-                                        if ch_num and size > 12:
+                                        # Match chapter number pattern — size > 16 skips ToC (10-12pt), finds real headers
+                                        if ch_num and size > 16:
                                             patterns = [f"chapter {ch_num}", f"chapter{ch_num}"]
                                             if any(p in text for p in patterns):
                                                 print(f"   ✅ Found 'Chapter {ch_num}' on PDF page {i+1}")
@@ -778,7 +778,7 @@ async def process_book(book_id: str, file_url: str, interest: str, book_type: st
                                                 break
 
                                         # Fallback: Match title variants
-                                        if found_true_page == -1 and size > 12:
+                                        if found_true_page == -1 and size > 16:
                                             for variant in title_variants:
                                                 if len(variant) > 5 and variant in text:
                                                     print(f"   ✅ Found '{variant}' on PDF page {i+1}")
@@ -1107,6 +1107,12 @@ def get_solid_diagram_regions(page):
     valid_regions = []
     for r in final_regions:
         if r.width > 50 and r.height > 50:
+            # TeX equation blocks are made of hundreds of tiny glyph strokes;
+            # real diagrams (arrows, curves, shapes) have far fewer paths.
+            path_count = sum(1 for p in paths if fitz.Rect(p["rect"]).intersects(r))
+            if path_count > 150:
+                print(f"⚙️ skipping equation-like region {r} ({path_count} paths)")
+                continue
             valid_regions.append(r)
     return valid_regions
 
@@ -1418,19 +1424,19 @@ async def process_chapter_content(chapter_id: str):
                             line_text = " ".join([s["text"] for s in line["spans"]])
                             max_size = max([s["size"] for s in line["spans"]])
 
-                            if max_size > 30 and chapter_number:
-                                nums = re.findall(r'\d+', line_text)
-                                if nums and len(nums) == 1 and int(nums[0]) == chapter_number:
-                                    new_start = check_idx + 1
-                                    if new_start != start_page:
-                                        print(f"   ✅ Corrected: page {start_page} → {new_start}")
-                                        start_page = new_start
-                                        start_idx = check_idx
-                                        await db_execute(pool, "UPDATE chapters SET start_page_num = $1 WHERE id = $2", new_start, chapter_id)
-                                    else:
-                                        print(f"   ✅ Start confirmed: page {start_page}")
-                                    found_start = True
-                                    break
+                            is_standalone = max_size > 30 and bool(re.fullmatch(r'\s*\d+\s*', line_text)) and re.findall(r'\d+', line_text) and int(re.findall(r'\d+', line_text)[0]) == chapter_number
+                            is_chapter_header = max_size > 15 and bool(re.search(rf'\bchapter\s*{chapter_number}\b', line_text, re.IGNORECASE))
+                            if chapter_number and (is_standalone or is_chapter_header):
+                                new_start = check_idx + 1
+                                if new_start != start_page:
+                                    print(f"   ✅ Corrected: page {start_page} → {new_start}")
+                                    start_page = new_start
+                                    start_idx = check_idx
+                                    await db_execute(pool, "UPDATE chapters SET start_page_num = $1 WHERE id = $2", new_start, chapter_id)
+                                else:
+                                    print(f"   ✅ Start confirmed: page {start_page}")
+                                found_start = True
+                                break
                         if found_start:
                             break
                     if found_start:

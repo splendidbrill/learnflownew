@@ -1563,7 +1563,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                               )}
                               <ReactMarkdown
                                 remarkPlugins={[remarkMath, remarkGfm]}
-                                rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }], rehypeRaw]}
+                                rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false, errorColor: 'inherit' }], rehypeRaw]}
                               >
                                 {para.latex_content}
                               </ReactMarkdown>
@@ -1635,7 +1635,7 @@ export const BookClientContent: React.FC<BookClientProps> = ({ bookId }) => {
                       ) : (
                         <ReactMarkdown
                           remarkPlugins={[remarkMath, remarkGfm]}
-                          rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+                          rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false, errorColor: 'inherit' }]]}
                           components={{
                             p: ({ node, children }) => (
                               <p className="mb-4 text-gray-300 leading-relaxed">{children}</p>
